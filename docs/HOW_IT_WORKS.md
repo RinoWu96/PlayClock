@@ -38,9 +38,10 @@ SQLite 文件 `data/playtime.db`。
 
 | 表 | 内容 |
 | --- | --- |
-| `sessions` | 每次游玩：`game`、`emulator`（模拟器名 / `Steam` / 手动填的平台）、`start`、`end`、`seconds`、`source` |
+| `sessions` | 每次游玩：`game`、`emulator`（模拟器名 / `Steam` / 手动填的平台）、`start`、`end`、`seconds`、`source`，以及同步用的 `uid`（全局唯一）、`device`（记录它的设备）、`updated`（最后修改时间） |
+| `tombstones` | 被删除会话的 `uid`，防止同步时被别的设备「复活」 |
 | `meta` | 游戏封面文件名（存放在 `data/covers/`） |
-| `aliases` | 重命名或合并：识别出的原名 → 记录用的名称 |
+| `aliases` | 重命名或合并：识别出的原名 → 记录用的名称（带 `updated`，用于同步） |
 | `steam_names` | 联网查到的 Steam 游戏名缓存 |
 
 `source` 字段区分时长的来源：
@@ -87,16 +88,46 @@ SQLite 文件 `data/playtime.db`。
 - **中文、日文名先查英文名**：调维基百科 API，参数为 `action=query&generator=search&gsrlimit=1&prop=langlinks&lllang=en`（简繁中文查 zh 站，带假名的查 ja 站），取第一条搜索结果对应的英文条目名。如果原名末尾有英文部分（比如「HD-2D Remake」）而英文名里没有，就补回去。用英文名在 SteamGridDB 搜不到时，再用原名搜。
 - 只有 SteamGridDB 请求会带 API Key；访问维基百科、Steam 商店和 Steam 图床时都不发送。
 
-## 5. 后台占用
+## 5. 多设备同步（`sync.py`）
+
+同步不经过任何 PlayClock 自己的服务器，而是使用用户自己的 WebDAV 存储（默认是坚果云 `https://dav.jianguoyun.com/dav/`，也可以用 NAS、Nextcloud 等）。
+
+- **文件布局**：WebDAV 上的 `PlayClock/devices/<设备ID>.json.gz`，每台设备一个文件，只由这台设备自己写入，所以不会有写冲突。设备 ID 是第一次运行时生成的 UUID，保存在 `config.json` 的 `device_id` 里。
+- **文件内容**：gzip 压缩的 JSON，字段如下：
+  - `format`：1。
+  - `device`、`name`：设备 ID 和电脑名。
+  - `sessions`：本设备记录的所有会话，每条带 `uid`、`game`、`emulator`、`start`、`end`、`seconds`、`source`、`device`、`updated`。
+  - `aliases`：本设备知道的全部改名、合并记录，含 `updated`。
+  - `tombstones`：本设备知道的全部删除标记，即被删会话的 `uid`。
+- **合并规则**（`merge_payload`）：
+  1. 先应用改名：比本地更新的别名覆盖本地别名，并把对应会话改到新名字下。
+  2. 再应用删除标记：删掉对应的会话，并记住这个 `uid`，以后再收到它就忽略。
+  3. 最后合并会话：同一个 `uid` 以 `updated` 较新的为准。
+
+  这样不管各设备按什么顺序同步，最后结果都一样；重复合并也不会出错。
+- **导入记录的 uid**：由 `(范围, 来源, 游戏名)` 的 SHA-1 算出，同样的导入在不同设备上会得到同一个 uid。Steam 的时长是整个账号的，范围为空，所以两台设备都导入同一个 Steam 账号也不会重复计算。Ryujinx 的时长每台设备各自记录，范围是设备 ID，所以电脑和 Deck 上的 Ryujinx 时长会相加。
+- **扣除差额只看本机**：「本机 PlayClock 自己计时的时长」只统计 `device` 等于本机的会话，所以别的设备同步过来的计时，不会影响本机导入时扣多少。
+- **一次同步的过程**（`run_sync`）：
+  1. 如果本机文件有变化（按内容哈希判断），就上传（PUT）。
+  2. 列出目录（PROPFIND，Depth 1），只下载版本标记（ETag）变了的其他设备文件。
+  3. 回到主线程合并。
+
+  网络操作都在后台线程里做，数据库只在主线程读写。
+- **频率**：启动 5 秒后、每 10 分钟、打开窗口时、以及点「立即同步」时各同步一次。
+- **密码**：用 Windows DPAPI（`CryptProtectData`）加密后保存在 `config.json` 里，只有当前 Windows 用户能解密。
+- **测试**：`tests/test_sync.py` 用 wsgidav 在本机启动一个真正的 WebDAV 服务器，跑完整的双设备同步。
+
+## 6. 后台占用
 
 - 窗口只在打开时存在；关闭后整个销毁，同时清空封面缓存，并调用 `SetProcessWorkingSetSize(-1, -1)` 让系统换出空闲内存。
 - 后台只有一个 `interval` 秒的检测定时器，没有每秒运行的任务。
 - 参考测量（只开托盘时）：专用内存约 24 MB，工作集约 7 MB，CPU 约 0。
 
-## 6. 隐私
+## 7. 隐私
 
 所有记录都只保存在本机的 `data/` 文件夹里。只有以下情况会联网：
 
 - 封面功能：访问 SteamGridDB；中文、日文名还会访问维基百科。
 - 查不到名字的 Steam 应用：访问 Steam 商店公开接口。
 - 下载 Steam 封面：访问 Steam 图床。
+- 开启云同步后：只访问用户自己填写的 WebDAV 地址。

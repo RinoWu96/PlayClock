@@ -20,6 +20,7 @@
 | `playclock/i18n.py` | 界面中英文：源文本是中文，`EN` 表是英文；`tests/test_i18n.py` 会检查漏翻 |
 | `playclock/covers.py` | SteamGridDB 客户端（用户自己的 API Key，QNetworkAccessManager 异步） |
 | `playclock/steam.py` | 读本机 Steam 的时长（`localconfig.vdf`）和游戏名 / 类型（二进制 `appinfo.vdf`），封面用 Steam 横幅 |
+| `playclock/sync.py` | 多设备同步：每台设备一个文件放在用户自己的 WebDAV（坚果云）上，按更新时间合并；密码用 DPAPI 加密 |
 | `playclock/importers.py` | 导入模拟器自带的时长记录（Ryujinx `games/*/gui/metadata.json`）；只补差额、可重复导入 |
 | `playclock/ui/` | 主题、自绘组件（封面、卡片、图表）、各页面、对话框（SteamGridDB 引导、封面搜索、导入预览） |
 | `playclock/app.py` | 主窗口、托盘、单实例、开机自启 |

@@ -462,3 +462,71 @@ class AddTimeDialog(Dialog):
         # end of that day (or now for today), so the time lands on the chosen date
         self.end = time.time() if today else time.mktime((d.year(), d.month(), d.day(), 22, 0, 0, 0, 0, -1))
         self.accept()
+
+
+# --------------------------------------------------------------------------- cloud sync
+
+
+class WebDavDialog(Dialog):
+    """Guide for connecting 坚果云 (or any WebDAV); verifies the login before accepting."""
+
+    def __init__(self, parent, url: str, user: str, run_async):
+        from ..sync import JIANGUOYUN, JIANGUOYUN_SECURITY, JIANGUOYUN_SITE
+        super().__init__(parent, tr("连接坚果云"), 660)
+        self.run_async = run_async
+        self.result = None  # (url, user, password) once verified
+        self.lay.addWidget(label(tr("连接坚果云"), "pageTitle"))
+        self.lay.addWidget(label(tr("游玩记录会保存在你自己的坚果云里，在多台电脑之间自动同步。坚果云免费版的流量对 PlayClock "
+                                    "来说绰绰有余。只需 3 步。"), "muted", wrap=True))
+        self.lay.addWidget(Step(1, tr("登录坚果云网页版"), tr("还没有账号的话可以免费注册。"),
+                                _button(tr("打开坚果云"), slot=lambda: QDesktopServices.openUrl(QUrl(JIANGUOYUN_SITE)))))
+        self.lay.addWidget(Step(2, tr("生成应用密码"),
+                                tr("点右上角的账户名 → 账户信息 → 安全选项 → 第三方应用管理 → 添加应用，"
+                                   "名称填 PlayClock，生成一个「应用密码」。注意：这里不能填坚果云的登录密码。"),
+                                _button(tr("打开安全选项"),
+                                        slot=lambda: QDesktopServices.openUrl(QUrl(JIANGUOYUN_SECURITY)))))
+        step3 = Step(3, tr("填写账号和应用密码"), tr("密码会加密保存在这台电脑上。"))
+        form = QFormLayout()
+        form.setVerticalSpacing(10)
+        self.user = QLineEdit(user)
+        self.user.setPlaceholderText(tr("坚果云登录邮箱或手机号"))
+        self.password = QLineEdit()
+        self.password.setPlaceholderText(tr("应用密码"))
+        self.password.setEchoMode(QLineEdit.Password)
+        self.url = QLineEdit(url or JIANGUOYUN)
+        for w in (self.user, self.password, self.url):
+            w.setMinimumHeight(36)
+        form.addRow(tr("账号"), self.user)
+        form.addRow(tr("应用密码"), self.password)
+        form.addRow(tr("服务器"), self.url)
+        step3.body.addLayout(form)
+        self.lay.addWidget(step3)
+        self.lay.addWidget(label(tr("使用其他 WebDAV 网盘（NAS、Nextcloud 等）时，把服务器改成它的 WebDAV 地址即可。"),
+                                 "faint", wrap=True))
+        self.ok = _button(tr("验证并保存"), "primary", self.verify)
+        self.footer(_button(tr("取消"), slot=self.reject), self.ok)
+
+    def verify(self):
+        from ..sync import SyncError, WebDAV
+        url, user, password = self.url.text().strip(), self.user.text().strip(), self.password.text()
+        if not (url and user and password):
+            self.set_status(tr("请填写账号和应用密码。"), True)
+            return
+        self.ok.setEnabled(False)
+        self.set_status(tr("正在验证…"))
+
+        def done(_result, error):
+            if not isValid(self):
+                return
+            self.ok.setEnabled(True)
+            if error is None:
+                self.result = (url, user, password)
+                self.accept()
+            elif isinstance(error, SyncError) and str(error) == "auth":
+                self.set_status(tr("坚果云账号或应用密码不正确。"), True)
+            elif isinstance(error, SyncError) and str(error).startswith("network"):
+                self.set_status(tr("无法连接服务器，请检查网络和服务器地址。"), True)
+            else:
+                self.set_status(tr("连接失败：{e}", e=error), True)
+
+        self.run_async(lambda: WebDAV(url, user, password).check(), done)

@@ -4,12 +4,13 @@ import gc
 import json
 import os
 import sys
+import threading
 import time
 import uuid
 import winreg
 from pathlib import Path
 
-from PySide6.QtCore import QLibraryInfo, QObject, QPoint, QSize, Qt, QTimer, QTranslator
+from PySide6.QtCore import QLibraryInfo, QObject, QPoint, QSize, Qt, QTimer, QTranslator, Signal
 from PySide6.QtGui import QIcon, QImage
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
@@ -99,6 +100,33 @@ def apply_language(app: QApplication, lang: str) -> None:
 # --------------------------------------------------------------------------- background
 
 
+class _Bridge(QObject):
+    done = Signal(object, object)  # result, error
+
+
+_bridges: set = set()
+
+
+def run_async(fn, callback):
+    """Run blocking `fn` (network) on a worker thread; `callback(result, error)` runs on the GUI thread."""
+    bridge = _Bridge()
+    _bridges.add(bridge)
+
+    def finish(result, error):
+        _bridges.discard(bridge)
+        callback(result, error)
+
+    bridge.done.connect(finish)
+
+    def work():
+        try:
+            bridge.done.emit(fn(), None)
+        except Exception as e:  # reported to the UI, never raised in the thread
+            bridge.done.emit(None, e)
+
+    threading.Thread(target=work, daemon=True).start()
+
+
 class Controller(QObject):
     """Everything that runs while PlayClock sits in the tray."""
 
@@ -123,6 +151,12 @@ class Controller(QObject):
         self.timer.timeout.connect(self.on_tick)
         self.timer.start(int(self.cfg["interval"] * 1000))
         self.on_tick()
+
+        self.syncing = False
+        self.sync_timer = QTimer(self)  # cloud sync every 10 minutes (network on a worker thread)
+        self.sync_timer.timeout.connect(self.sync_now)
+        self.sync_timer.start(10 * 60 * 1000)
+        QTimer.singleShot(5000, self.sync_now)
 
     def build_tray_menu(self):
         self.menu = QMenu()
@@ -307,6 +341,77 @@ class Controller(QObject):
         next_one()
 
     # --- window lifecycle ------------------------------------------------------
+    # --- cloud sync (WebDAV) -------------------------------------------------
+    def sync_enabled(self) -> bool:
+        return bool(self.cfg.get("webdav"))
+
+    def sync_now(self, manual: bool = False):
+        w = self.cfg.get("webdav")
+        if not w or self.syncing:
+            return
+        from .sync import WebDAV, digest, encode, export_payload, run_sync, unprotect  # only when sync is on
+        self.tracker.flush()
+        payload = export_payload(self.db, os.environ.get("COMPUTERNAME", "PC"))
+        h = digest(payload)
+        upload = encode(payload) if h != self.cfg.get("sync_hash") else None
+        try:
+            client = WebDAV(w["url"], w["user"], unprotect(w["pass"]))
+        except Exception as e:  # e.g. config copied from another Windows user: DPAPI can't decrypt
+            self.sync_finished(None, e, h, manual)
+            return
+        known = dict(self.cfg.get("sync_tags", {}))
+        self.syncing = True
+        if self.window:
+            self.window.refresh_sync_state()
+        run_async(lambda: run_sync(client, self.db.device, upload, known),
+                  lambda result, error: self.sync_finished(result, error, h if upload else None, manual))
+
+    def sync_finished(self, result, error, uploaded_hash, manual):
+        QTimer.singleShot(1000, self.release_memory)
+        from .sync import decode, merge_payload, SyncError
+        self.syncing = False
+        if error is not None:
+            msg = str(error)
+            if isinstance(error, SyncError) and msg == "auth":
+                msg = tr("坚果云账号或应用密码不正确。")
+            elif isinstance(error, SyncError) and msg.startswith("network"):
+                msg = tr("网络连接失败，稍后会自动重试。")
+            self.set_cfg("sync_error", msg)
+        else:
+            blobs, tags = result
+            devices = dict(self.cfg.get("sync_devices", {}))
+            changed = 0
+            for blob in blobs.values():
+                try:
+                    p = decode(blob)
+                except (OSError, ValueError):
+                    continue  # a half-written or foreign file: skip it, try again next time
+                changed += merge_payload(self.db, p)
+                devices[p.get("device", "?")] = p.get("name", "?")
+            self.cfg.update(sync_tags=tags, sync_devices=devices, sync_error="", last_sync=time.time())
+            if uploaded_hash:
+                self.cfg["sync_hash"] = uploaded_hash
+            save_config(self.cfg)
+            if changed:
+                self.changed()
+        if self.window:
+            self.window.refresh_sync_state()
+        if manual:
+            self.tray.showMessage(APP_TITLE, self.cfg.get("sync_error") or tr("同步完成。"),
+                                  QSystemTrayIcon.Warning if error else QSystemTrayIcon.Information, 3000)
+
+    def set_webdav(self, url: str, user: str, password: str):
+        from .sync import protect
+        self.cfg.update(webdav={"url": url, "user": user, "pass": protect(password)},
+                        sync_tags={}, sync_hash="", sync_error="")
+        save_config(self.cfg)
+        self.sync_now(manual=True)
+
+    def clear_webdav(self):
+        for k in ("webdav", "sync_tags", "sync_hash", "sync_error", "last_sync", "sync_devices"):
+            self.cfg.pop(k, None)
+        save_config(self.cfg)
+
     def show_window(self, page: str = "home", geometry=None):
         if self.window is None:
             self.window = MainWindow(self)
@@ -316,6 +421,7 @@ class Controller(QObject):
         self.window.showNormal()
         self.window.raise_()
         self.window.activateWindow()
+        self.sync_now()  # fresh numbers from other devices when the user looks
 
     def window_closed(self):
         """The window is gone: drop it and everything it cached."""
@@ -608,6 +714,27 @@ class MainWindow(QMainWindow):
     def platform_of(self, emulator: str) -> str:
         return self.ctrl.platform_of(emulator)
 
+    def connect_webdav(self):
+        from .ui.dialogs import WebDavDialog
+        w = self.cfg.get("webdav") or {}
+        dlg = WebDavDialog(self, w.get("url", ""), w.get("user", ""), run_async)
+        if dlg.exec() and dlg.result:
+            self.ctrl.set_webdav(*dlg.result)
+            self.refresh_current()
+
+    def disconnect_webdav(self):
+        if QMessageBox.question(self, APP_TITLE, tr("停止云同步吗？本机和坚果云上的记录都会保留。")) == QMessageBox.Yes:
+            self.ctrl.clear_webdav()
+            self.refresh_current()
+
+    def sync_now(self):
+        self.ctrl.sync_now(manual=True)
+
+    def refresh_sync_state(self):
+        page = self.pages["settings"]
+        if self.current_page() is page:
+            page.refresh_sync()
+
     def add_time(self, game: str = "", platform: str = ""):
         from .ui.dialogs import AddTimeDialog
         known = sorted({self.platform_of(e) for e in self.db.emulators()} | {"Switch", "PS5", "PS4", "Xbox", "PC"})
@@ -747,7 +874,10 @@ def main():
     cfg = load_config()
     save_config(cfg)
     apply_language(app, i18n.resolve(cfg["language"]))
-    db = DB(DATA / "playtime.db")
+    if not cfg.get("device_id"):  # identifies this PC's records in cloud sync
+        cfg["device_id"] = uuid.uuid4().hex
+        save_config(cfg)
+    db = DB(DATA / "playtime.db", device=cfg["device_id"])
     db.drop_short(float(cfg["min_session"]))  # leftovers from a crash / power cut
     if LEGACY_RULES_PATH.exists():
         LEGACY_RULES_PATH.replace(LEGACY_RULES_PATH.with_suffix(".json.bak"))
@@ -768,5 +898,5 @@ def main():
     if "--minimized" not in sys.argv:
         ctrl.show_window()
     else:
-        QTimer.singleShot(3000, ctrl.release_memory)
+        QTimer.singleShot(8000, ctrl.release_memory)  # after the startup sync (5 s)
     return app.exec()

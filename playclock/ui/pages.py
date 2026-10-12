@@ -721,6 +721,27 @@ class SettingsPage(Page):
         history.lay.addWidget(self.steam_state)
         self.lay.addWidget(history)
 
+        cloud = Card(spacing=12)
+        s_head = QHBoxLayout()
+        s_head.addWidget(label(tr("云同步"), "sectionTitle"))
+        s_head.addStretch()
+        self.b_sync_off = QPushButton(tr("停止同步"))
+        self.b_sync_off.setObjectName("ghost")
+        self.b_sync_off.clicked.connect(ctx.disconnect_webdav)
+        self.b_sync_now = QPushButton(tr("立即同步"))
+        self.b_sync_now.clicked.connect(ctx.sync_now)
+        self.b_sync_setup = QPushButton()
+        self.b_sync_setup.clicked.connect(ctx.connect_webdav)
+        for b in (self.b_sync_off, self.b_sync_now, self.b_sync_setup):
+            b.setCursor(Qt.PointingHandCursor)
+            s_head.addWidget(b)
+        cloud.lay.addLayout(s_head)
+        self.sync_state = label("", "muted", wrap=True)
+        cloud.lay.addWidget(self.sync_state)
+        cloud.lay.addWidget(label(tr("通过你自己的坚果云（或任意 WebDAV 网盘）在多台电脑之间同步游玩记录，"
+                                     "不经过任何第三方服务器。封面图暂不同步，每台设备会各自补全。"), "faint", wrap=True))
+        self.lay.insertWidget(2, cloud)  # right after "General": header layout is 0, general card 1
+
         data = Card(spacing=12)
         data.lay.addWidget(label(tr("数据"), "sectionTitle"))
         self.data_label = label("", "muted", wrap=True)
@@ -747,6 +768,7 @@ class SettingsPage(Page):
         self.rules_label.setText(tr("支持：") + tr("、").join(r.name for r in self.ctx.tracker.rules)
                                  + tr("\n内置规则随软件版本更新；自己添加或修改的规则保存在 rules.user.json，更新时不会被覆盖。"))
         self.data_label.setText(tr("所有记录都只保存在本机：{path}", path=self.ctx.data_dir))
+        self.refresh_sync()
         acc = self.ctx.cfg.get("steam_sync")
         self.steam_state.setText(tr("Steam 自动同步：已开启（账号 {acc}），Steam 记录有变化时会自动更新。", acc=acc) if acc
                                  else tr("Steam 自动同步：未开启。导入 Steam 时可以选择开启。"))
@@ -762,6 +784,31 @@ class SettingsPage(Page):
         self.about.setText(f"{self.ctx.app_title} v{self.ctx.version}\n"
                            + tr("通过读取模拟器窗口标题识别正在运行的游戏，不读取、不修改任何游戏文件。只有使用 SteamGridDB 封面功能时才会联网。"))
         self.on_tick()
+
+    def refresh_sync(self):
+        cfg = self.ctx.cfg
+        on = bool(cfg.get("webdav"))
+        if not on:
+            text = tr("未开启。")
+        elif self.ctx.ctrl.syncing:
+            text = tr("正在同步…")
+        elif cfg.get("sync_error"):
+            text = tr("上次同步失败：{e}", e=cfg["sync_error"])
+        elif cfg.get("last_sync"):
+            others = [n for d, n in cfg.get("sync_devices", {}).items() if d != cfg.get("device_id")]
+            text = tr("已连接 {user}，上次同步：{t}。", user=cfg["webdav"]["user"], t=fmt_ago(cfg["last_sync"]))
+            if others:
+                text += " " + tr("其他设备：{names}", names=tr("、").join(others))
+        else:
+            text = tr("已连接 {user}，等待首次同步。", user=cfg["webdav"]["user"])
+        self.sync_state.setText(text)
+        self.sync_state.setStyleSheet(f"color: {theme.DANGER if on and cfg.get('sync_error') else theme.MUTED};")
+        self.b_sync_setup.setText(tr("修改账号") if on else tr("连接坚果云…"))
+        self.b_sync_setup.setObjectName("" if on else "primary")
+        self.b_sync_setup.style().polish(self.b_sync_setup)
+        self.b_sync_now.setVisible(on)
+        self.b_sync_now.setEnabled(not self.ctx.ctrl.syncing)
+        self.b_sync_off.setVisible(on)
 
     def on_tick(self):
         lines = []

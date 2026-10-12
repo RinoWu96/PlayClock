@@ -339,6 +339,49 @@ EN = {
     "最后游玩日期": "Last played on",
     "添加": "Add",
     "请填写游戏名、平台和时长。": "Enter a game name, platform and duration.",
+    # cloud sync (WebDAV / 坚果云)
+    "云同步": "Cloud sync",
+    "通过你自己的坚果云（或任意 WebDAV 网盘）在多台电脑之间同步游玩记录，不经过任何第三方服务器。封面图暂不同步，每台设备会各自补全。":
+        "Sync your play records between PCs through your own Jianguoyun (Nutstore) or any WebDAV storage — no "
+        "third-party server involved. Cover images aren't synced yet; each device fills in its own.",
+    "未开启。": "Off.",
+    "正在同步…": "Syncing…",
+    "上次同步失败：{e}": "Last sync failed: {e}",
+    "已连接 {user}，上次同步：{t}。": "Connected as {user}. Last synced {t}.",
+    "已连接 {user}，等待首次同步。": "Connected as {user}. Waiting for the first sync.",
+    "其他设备：{names}": "Other devices: {names}",
+    "立即同步": "Sync now",
+    "停止同步": "Stop syncing",
+    "修改账号": "Change account",
+    "连接坚果云…": "Connect Jianguoyun…",
+    "连接坚果云": "Connect Jianguoyun",
+    "停止云同步吗？本机和坚果云上的记录都会保留。":
+        "Stop cloud sync? Records on this PC and in your Jianguoyun storage are kept.",
+    "同步完成。": "Sync complete.",
+    "坚果云账号或应用密码不正确。": "The account or app password isn't correct.",
+    "游玩记录会保存在你自己的坚果云里，在多台电脑之间自动同步。坚果云免费版的流量对 PlayClock 来说绰绰有余。只需 3 步。":
+        "Your play records are kept in your own Jianguoyun (Nutstore) storage and sync between PCs automatically. "
+        "The free plan is more than enough for PlayClock. It takes 3 steps.",
+    "登录坚果云网页版": "Sign in to Jianguoyun on the web",
+    "还没有账号的话可以免费注册。": "You can register for free if you don't have an account.",
+    "打开坚果云": "Open Jianguoyun",
+    "生成应用密码": "Create an app password",
+    "点右上角的账户名 → 账户信息 → 安全选项 → 第三方应用管理 → 添加应用，名称填 PlayClock，生成一个「应用密码」。注意：这里不能填坚果云的登录密码。":
+        "Click your account name at the top right → Account info → Security → Third-party apps → Add app, "
+        "name it PlayClock and create an app password. Your login password won't work here.",
+    "打开安全选项": "Open security settings",
+    "填写账号和应用密码": "Enter your account and app password",
+    "密码会加密保存在这台电脑上。": "The password is stored encrypted on this PC.",
+    "坚果云登录邮箱或手机号": "Jianguoyun login email or phone number",
+    "应用密码": "App password",
+    "账号": "Account",
+    "服务器": "Server",
+    "使用其他 WebDAV 网盘（NAS、Nextcloud 等）时，把服务器改成它的 WebDAV 地址即可。":
+        "For other WebDAV storage (a NAS, Nextcloud…), change the server to its WebDAV address.",
+    "请填写账号和应用密码。": "Enter your account and app password.",
+    "连接失败：{e}": "Couldn't connect: {e}",
+    "网络连接失败，稍后会自动重试。": "Couldn't reach the server. PlayClock will try again later.",
+    "无法连接服务器，请检查网络和服务器地址。": "Couldn't reach the server. Check your connection and the server address.",
     "从 Steam 等平台导入的历史时长没有具体日期，只计入总时长和排行，不计入趋势、日均和游玩天数。":
         "Imported history (from Steam and others) has no dates, so it counts toward totals and rankings "
         "but not the trend chart, daily average or days played.",
