@@ -3,6 +3,7 @@
 托盘常驻，每隔几秒读取模拟器窗口标题识别正在运行的游戏，把游玩时长记到本地 SQLite。
 
 - 运行：`dist\EmuPlaytime\EmuPlaytime.exe`（数据在它旁边的 `data\`：`playtime.db`、`rules.user.json`、`config.json`、`covers\`）
+- 环境：`uv venv --python 3.11 .venv` 后 `uv pip install --python .venv\Scripts\python.exe -r requirements.txt`
 - 开发：`.venv\Scripts\python.exe main.py`；测试：`.venv\Scripts\python.exe -m pytest -q tests`
 - 打包：`build.bat`（输出到 `dist\EmuPlaytime`；不要把 distpath 设成项目根目录——Windows 不区分大小写，会和 `emuplaytime\` 源码包撞名）
 
