@@ -118,6 +118,26 @@ def fill_sessions(t: QTableWidget, rows, with_game: bool = True):
 class HomePage(Page):
     def __init__(self, ctx):
         super().__init__(ctx, tr("概览"), "")
+        self.banner = Card(padding=16, spacing=0)
+        self.banner.setStyleSheet(f"#card {{ border-color: {theme.ACCENT}; }}")
+        b_row = QHBoxLayout()
+        b_row.setSpacing(12)
+        self.banner_text = label("", None, wrap=True)
+        b_row.addWidget(self.banner_text, 1)
+        b_import = QPushButton(tr("导入"))
+        b_import.setObjectName("primary")
+        b_import.setCursor(Qt.PointingHandCursor)
+        b_import.clicked.connect(ctx.open_import)
+        b_dismiss = QPushButton(tr("不再提示"))
+        b_dismiss.setObjectName("ghost")
+        b_dismiss.setCursor(Qt.PointingHandCursor)
+        b_dismiss.clicked.connect(self.dismiss_banner)
+        b_row.addWidget(b_import)
+        b_row.addWidget(b_dismiss)
+        self.banner.lay.addLayout(b_row)
+        self.banner.hide()
+        self.lay.addWidget(self.banner)
+
         self.hero = NowPlaying()
         self.hero.setCursor(Qt.PointingHandCursor)
         self.hero.mouseReleaseEvent = lambda e: ctx.current_game() and ctx.open_game(ctx.current_game())
@@ -168,6 +188,7 @@ class HomePage(Page):
         db = self.ctx.db
         self.title.setText(self.greeting())
         self.on_tick()
+        self.update_banner()
         today, week, month = db.total_since(midnight()), db.total_since(week_start()), db.total_since(month_start())
         stats = db.game_stats()
         total = sum(r["total"] for r in stats)
@@ -198,6 +219,19 @@ class HomePage(Page):
         self.chart.set_data(daily_points(days))
         s = sum(x for _, x in days)
         self.chart_sum.setText(tr("合计 {t} · 日均 {a}", t=fmt_dur(s), a=fmt_dur(s / 14)))
+
+    def update_banner(self):
+        if self.ctx.cfg.get("ryujinx_banner_dismissed"):
+            self.banner.hide()
+            return
+        n, secs = self.ctx.ryujinx_pending()
+        self.banner.setVisible(n > 0 and secs >= 300)
+        self.banner_text.setText(tr("在 Ryujinx 里发现 {n} 款游戏共 {t} 的游玩记录，导入后统计会更完整。",
+                                    n=n, t=fmt_dur(secs)))
+
+    def dismiss_banner(self):
+        self.ctx.set_cfg("ryujinx_banner_dismissed", True)
+        self.banner.hide()
 
     def fit_recent(self):
         """Show only as many recent cards as fit on one row."""
@@ -308,8 +342,10 @@ class GamePage(Page):
         info.addStretch()
         btns = QHBoxLayout()
         btns.setSpacing(10)
-        b_cover = QPushButton(tr("设置封面"))
-        b_cover.setObjectName("primary")
+        b_online = QPushButton(tr("在线搜索封面"))
+        b_online.setObjectName("primary")
+        b_online.clicked.connect(lambda: ctx.search_cover(self.game))
+        b_cover = QPushButton(tr("本地图片"))
         b_cover.clicked.connect(lambda: ctx.choose_cover(self.game))
         self.b_clear = QPushButton(tr("移除封面"))
         self.b_clear.clicked.connect(lambda: ctx.clear_cover(self.game))
@@ -318,7 +354,7 @@ class GamePage(Page):
         b_del = QPushButton(tr("删除记录"))
         b_del.setObjectName("danger")
         b_del.clicked.connect(lambda: ctx.delete_game(self.game))
-        for b in (b_cover, self.b_clear, b_rename, b_del):
+        for b in (b_online, b_cover, self.b_clear, b_rename, b_del):
             b.setCursor(Qt.PointingHandCursor)
             btns.addWidget(b)
         btns.addStretch()
@@ -584,6 +620,48 @@ class SettingsPage(Page):
         detect.lay.addWidget(self.debug)
         self.lay.addWidget(detect)
 
+        covers = Card(spacing=12)
+        c_head = QHBoxLayout()
+        c_head.addWidget(label(tr("封面"), "sectionTitle"))
+        c_head.addStretch()
+        self.b_connect = QPushButton()
+        self.b_connect.setCursor(Qt.PointingHandCursor)
+        self.b_connect.clicked.connect(ctx.connect_sgdb)
+        self.b_disconnect = QPushButton(tr("断开"))
+        self.b_disconnect.setObjectName("ghost")
+        self.b_disconnect.setCursor(Qt.PointingHandCursor)
+        self.b_disconnect.clicked.connect(ctx.disconnect_sgdb)
+        c_head.addWidget(self.b_disconnect)
+        c_head.addWidget(self.b_connect)
+        covers.lay.addLayout(c_head)
+        self.sgdb_state = label("", "muted", wrap=True)
+        covers.lay.addWidget(self.sgdb_state)
+        self.auto_cover = Toggle(tr("为新识别到的游戏自动下载封面"))
+        self.auto_cover.setChecked(bool(cfg.get("auto_cover", True)))
+        self.auto_cover.toggled.connect(lambda v: ctx.set_cfg("auto_cover", v))
+        covers.lay.addWidget(self.auto_cover)
+        c_row = QHBoxLayout()
+        self.b_fill = QPushButton(tr("为没有封面的游戏补全封面"))
+        self.b_fill.setCursor(Qt.PointingHandCursor)
+        self.b_fill.clicked.connect(ctx.fill_missing_covers)
+        c_row.addWidget(self.b_fill)
+        c_row.addStretch()
+        covers.lay.addLayout(c_row)
+        self.lay.addWidget(covers)
+
+        history = Card(spacing=12)
+        history.lay.addWidget(label(tr("导入历史时长"), "sectionTitle"))
+        history.lay.addWidget(label(tr("把模拟器自己记录的游玩时长导入 PlayClock，安装之前玩的时间也能算进统计。"
+                                       "只补上 PlayClock 没记录到的部分，可以放心重复导入。"), "muted", wrap=True))
+        h_row = QHBoxLayout()
+        b_ryu = QPushButton(tr("从 Ryujinx 导入…"))
+        b_ryu.setCursor(Qt.PointingHandCursor)
+        b_ryu.clicked.connect(ctx.open_import)
+        h_row.addWidget(b_ryu)
+        h_row.addStretch()
+        history.lay.addLayout(h_row)
+        self.lay.addWidget(history)
+
         data = Card(spacing=12)
         data.lay.addWidget(label(tr("数据"), "sectionTitle"))
         self.data_label = label("", "muted", wrap=True)
@@ -610,8 +688,17 @@ class SettingsPage(Page):
         self.rules_label.setText(tr("支持：") + tr("、").join(r.name for r in self.ctx.tracker.rules)
                                  + tr("\n内置规则随软件版本更新；自己添加或修改的规则保存在 rules.user.json，更新时不会被覆盖。"))
         self.data_label.setText(tr("所有记录都只保存在本机：{path}", path=self.ctx.data_dir))
+        connected = bool(self.ctx.sgdb_key())
+        self.sgdb_state.setText(tr("已连接 SteamGridDB，可以在游戏详情页在线搜索封面。") if connected else
+                                tr("连接免费的 SteamGridDB 封面库后，可以在线搜索封面，并为新游戏自动配图。"))
+        self.b_connect.setText(tr("更换 API Key") if connected else tr("连接 SteamGridDB…"))
+        self.b_connect.setObjectName("" if connected else "primary")
+        self.b_connect.style().polish(self.b_connect)
+        self.b_disconnect.setVisible(connected)
+        self.auto_cover.setEnabled(connected)
+        self.b_fill.setEnabled(connected)
         self.about.setText(f"{self.ctx.app_title} v{self.ctx.version}\n"
-                           + tr("通过读取模拟器窗口标题识别正在运行的游戏，不读取、不修改任何游戏文件，不联网。"))
+                           + tr("通过读取模拟器窗口标题识别正在运行的游戏，不读取、不修改任何游戏文件。只有使用 SteamGridDB 封面功能时才会联网。"))
         self.on_tick()
 
     def on_tick(self):

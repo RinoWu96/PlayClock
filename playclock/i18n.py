@@ -227,10 +227,91 @@ EN = {
     "\n内置规则随软件版本更新；自己添加或修改的规则保存在 rules.user.json，更新时不会被覆盖。":
         "\nBuilt-in rules update with the app; rules you add or change live in rules.user.json and are never overwritten.",
     "所有记录都只保存在本机：{path}": "All records stay on this PC: {path}",
-    "通过读取模拟器窗口标题识别正在运行的游戏，不读取、不修改任何游戏文件，不联网。":
-        "Detects the running game from emulator window titles. "
-        "It never reads or modifies game files and never goes online.",
+    "通过读取模拟器窗口标题识别正在运行的游戏，不读取、不修改任何游戏文件。只有使用 SteamGridDB 封面功能时才会联网。":
+        "Detects the running game from emulator window titles and never reads or modifies game files. "
+        "It only goes online when you use SteamGridDB cover art.",
     "  [前台]": "  [foreground]",
     "  [最小化]": "  [minimized]",
     "（没有发现正在运行的已知模拟器）": "(No known emulator is running)",
+    # covers (SteamGridDB)
+    "封面": "Cover art",
+    "在线搜索封面": "Find cover online",
+    "在线搜索封面…": "Find cover online…",
+    "本地图片": "From file",
+    "断开": "Disconnect",
+    "连接 SteamGridDB": "Connect SteamGridDB",
+    "连接 SteamGridDB…": "Connect SteamGridDB…",
+    "更换 API Key": "Change API key",
+    "已连接 SteamGridDB，可以在游戏详情页在线搜索封面。":
+        "Connected to SteamGridDB. Find covers online from any game's page.",
+    "连接免费的 SteamGridDB 封面库后，可以在线搜索封面，并为新游戏自动配图。":
+        "Connect the free SteamGridDB cover library to search covers online and add them to new games automatically.",
+    "为新识别到的游戏自动下载封面": "Automatically download covers for newly detected games",
+    "为没有封面的游戏补全封面": "Add covers to games that have none",
+    "所有游戏都已经有封面了。": "Every game already has a cover.",
+    "已为 {n} 款游戏补全封面。": ("Added a cover to {n} game.", "Added covers to {n} games."),
+    "API Key 无效，请检查后重新填写。": "That API key isn't valid. Please check it and try again.",
+    "网络错误：{e}": "Network error: {e}",
+    "SteamGridDB 返回了无法识别的数据。": "SteamGridDB sent a response PlayClock couldn't read.",
+    "SteamGridDB 返回了错误。": "SteamGridDB returned an error.",
+    "SteamGridDB 是免费的社区游戏封面库，主机游戏也很全。连接后可以在线搜索封面，还能为新游戏自动配上封面。只需 3 步，大约 1 分钟。":
+        "SteamGridDB is a free community library of game artwork with great console coverage. "
+        "Once connected you can search covers online and new games get one automatically. "
+        "It takes 3 steps and about a minute.",
+    "打开网站": "Open website",
+    "登录 SteamGridDB": "Sign in to SteamGridDB",
+    "在网站右上角点「Login」，可以直接用 Steam 账号登录，完全免费。":
+        "Click “Login” at the top right. You can sign in with your Steam account, and it's free.",
+    "打开 API 页面": "Open API page",
+    "生成 API Key": "Generate an API key",
+    "在打开的「API」设置页点击「Generate API Key」，然后复制生成的那一串密钥。":
+        "On the “API” preferences page, click “Generate API Key” and copy the key it shows.",
+    "粘贴到这里": "Paste it here",
+    "密钥只保存在这台电脑上，不会上传到别处。": "The key is stored only on this PC and isn't sent anywhere else.",
+    "粘贴 API Key": "Paste API key",
+    "粘贴": "Paste",
+    "显示": "Show",
+    "搜索封面时会把游戏名发送给 SteamGridDB；不使用封面功能时 PlayClock 不会联网。":
+        "Searching for covers sends game names to SteamGridDB. PlayClock doesn't go online otherwise.",
+    "验证并保存": "Verify and save",
+    "取消": "Cancel",
+    "请先粘贴 API Key。": "Paste your API key first.",
+    "正在验证…": "Verifying…",
+    "搜索": "Search",
+    "正在搜索…": "Searching…",
+    "没有找到匹配的游戏，换个名字试试（英文名通常更容易搜到）。":
+        "No matching games. Try another name (English titles usually work best).",
+    "选择左侧的游戏，再点击喜欢的封面。": "Pick a game on the left, then click the cover you like.",
+    "正在加载封面…": "Loading covers…",
+    "共 {n} 张封面，点击即可使用。": ("{n} cover. Click it to use it.", "{n} covers. Click one to use it."),
+    "这个游戏还没有横版封面，试试其他搜索结果。": "This game has no landscape covers yet. Try another result.",
+    "加载中…": "Loading…",
+    "正在下载封面…": "Downloading cover…",
+    "下载失败。": "Download failed.",
+    # history import
+    "导入历史时长": "Import play history",
+    "把模拟器自己记录的游玩时长导入 PlayClock，安装之前玩的时间也能算进统计。只补上 PlayClock 没记录到的部分，可以放心重复导入。":
+        "Import the playtime your emulators recorded themselves, so time from before PlayClock counts too. "
+        "Only time PlayClock doesn't already have is added, so importing again is safe.",
+    "从 Ryujinx 导入…": "Import from Ryujinx…",
+    "导入": "Import",
+    "不再提示": "Don't show again",
+    "在 Ryujinx 里发现 {n} 款游戏共 {t} 的游玩记录，导入后统计会更完整。":
+        ("Ryujinx has {t} of play history for {n} game. Import it to complete your stats.",
+         "Ryujinx has {t} of play history across {n} games. Import it to complete your stats."),
+    "导入 {emu} 的游玩记录": "Import {emu} play history",
+    "{emu} 自己也会记录每个游戏的累计时长。导入后，安装 PlayClock 之前玩的时间也能算进统计。只会补上 PlayClock 没记录到的部分，重复导入也不会重复计算。":
+        "{emu} keeps its own playtime total for each game. Importing it brings time from before PlayClock into "
+        "your stats. Only the part PlayClock didn't record is added, and importing again never double counts.",
+    "选择其他文件夹…": "Choose another folder…",
+    "选择 {emu} 数据文件夹": "Choose the {emu} data folder",
+    "{emu} 记录": "{emu} total",
+    "PlayClock 已记录": "Tracked by PlayClock",
+    "将导入": "Will import",
+    "没有在默认位置找到 {emu} 的数据。如果你用的是便携版，请选择它的文件夹。":
+        "No {emu} data found in the usual place. If you use a portable install, choose its folder.",
+    "数据来源：{path}": "Source: {path}",
+    "共 {n} 款游戏，将导入 {t}。": ("{n} game, {t} to import.", "{n} games, {t} to import."),
+    "这个文件夹里没有找到游玩记录。": "No play history found in this folder.",
+    "已导入 {n} 款游戏的游玩记录。": ("Imported play history for {n} game.", "Imported play history for {n} games."),
 }

@@ -177,6 +177,8 @@ class Toggle(QAbstractButton):
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        if not self.isEnabled():
+            p.setOpacity(0.4)
         track = QRectF(0, (self.height() - 24) / 2, 44, 24)
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(theme.ACCENT if self.isChecked() else "#2e3443"))

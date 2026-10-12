@@ -17,11 +17,14 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from . import i18n
+from .covers import SteamGridDB
 from .db import DB
+from .importers import RYUJINX, apply_import, pending_seconds, plan_import, ryujinx_roots, scan_ryujinx
 from .i18n import tr
 from .rules import ensure_user_file, load_rules, write_builtin_reference
 from .tracker import Tracker
 from .ui import theme
+from .ui.dialogs import CoverSearchDialog, ImportDialog, KeyGuideDialog
 from .ui.pages import GamePage, HistoryPage, HomePage, LibraryPage, SettingsPage, StatsPage
 from .ui.widgets import app_icon, cover_pixmap, fmt_dur, icon, label
 
@@ -85,6 +88,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.db, self.tracker, self.cfg = db, tracker, cfg
         self.rebuild = rebuild
+        self.sgdb = SteamGridDB(cfg.get("sgdb_key", ""), self)
+        self.cover_tried: set[str] = set()
         self.app_title, self.version, self.data_dir = APP_TITLE, __version__, DATA
         self.quitting = False
         self.last_game = None
@@ -219,6 +224,7 @@ class MainWindow(QMainWindow):
     def game_menu(self, game: str, pos: QPoint):
         m = QMenu(self)
         m.addAction(tr("查看详情"), lambda: self.open_game(game))
+        m.addAction(tr("在线搜索封面…"), lambda: self.search_cover(game))
         m.addAction(tr("设置封面…"), lambda: self.choose_cover(game))
         m.addAction(tr("重命名 / 合并…"), lambda: self.rename_game(game))
         m.addSeparator()
@@ -239,10 +245,12 @@ class MainWindow(QMainWindow):
                                               tr("图片") + " (*.png *.jpg *.jpeg *.webp *.bmp)")
         if not path:
             return
-        img = QImage(path)
-        if img.isNull():
+        if not self.save_cover(game, QImage(path)):
             QMessageBox.warning(self, APP_TITLE, tr("无法读取这张图片。"))
-            return
+
+    def save_cover(self, game: str, img: QImage) -> bool:
+        if img.isNull():
+            return False
         if img.width() > 1280:
             img = img.scaledToWidth(1280, Qt.SmoothTransformation)
         COVERS.mkdir(parents=True, exist_ok=True)
@@ -251,6 +259,84 @@ class MainWindow(QMainWindow):
         self._remove_cover_file(game)
         self.db.set_cover(game, name)
         self.refresh_current()
+        return True
+
+    # --- SteamGridDB -------------------------------------------------------
+    def sgdb_key(self) -> str:
+        return self.cfg.get("sgdb_key", "")
+
+    def connect_sgdb(self) -> bool:
+        """Show the key guide; True once a verified key is saved."""
+        dlg = KeyGuideDialog(self, self.sgdb_key())
+        if dlg.exec() and dlg.key:
+            self.set_cfg("sgdb_key", dlg.key)
+            self.refresh_current()
+            return True
+        return False
+
+    def disconnect_sgdb(self):
+        self.set_cfg("sgdb_key", "")
+        self.refresh_current()
+
+    def search_cover(self, game: str):
+        if not self.sgdb_key() and not self.connect_sgdb():
+            return
+        dlg = CoverSearchDialog(self, self.sgdb_key(), game)
+        if dlg.exec() and dlg.image:
+            img = QImage.fromData(dlg.image)
+            if not self.save_cover(game, img):
+                QMessageBox.warning(self, APP_TITLE, tr("无法读取这张图片。"))
+
+    def auto_cover(self, game: str, done=None):
+        """Fetch the best-guess cover for a game that has none (once per game per run)."""
+        if not self.sgdb_key() or self.db.get_cover(game) or game in self.cover_tried:
+            if done:
+                done()
+            return
+        self.cover_tried.add(game)
+
+        def got(data, _err):
+            if data and not self.db.get_cover(game):
+                self.save_cover(game, QImage.fromData(data))
+            if done:
+                done()
+
+        self.sgdb.key = self.sgdb_key()
+        self.sgdb.first_cover(game, got)
+
+    def fill_missing_covers(self):
+        missing = [g for g in self.db.games() if not self.db.get_cover(g)]
+        self.cover_tried.difference_update(missing)
+        if not missing:
+            QMessageBox.information(self, APP_TITLE, tr("所有游戏都已经有封面了。"))
+            return
+        before = len(missing)
+
+        def next_one():
+            if missing:
+                self.auto_cover(missing.pop(0), next_one)
+            else:
+                still = len([g for g in self.db.games() if not self.db.get_cover(g)])
+                self.tray.showMessage(APP_TITLE, tr("已为 {n} 款游戏补全封面。", n=before - still),
+                                      QSystemTrayIcon.Information, 3000)
+
+        next_one()
+
+    # --- history import ------------------------------------------------------
+    def open_import(self):
+        dlg = ImportDialog(self, self.db, ryujinx_roots(), scan_ryujinx, plan_import, apply_import)
+        if dlg.exec():
+            QMessageBox.information(self, APP_TITLE, tr("已导入 {n} 款游戏的游玩记录。", n=dlg.imported))
+            self.refresh_current()
+
+    def ryujinx_pending(self) -> tuple[int, float]:
+        """(games, seconds) Ryujinx has recorded that PlayClock doesn't have yet."""
+        roots = ryujinx_roots()
+        if not roots:
+            return 0, 0.0
+        plan = plan_import(self.db, scan_ryujinx(roots[0]))
+        rows = [r for r in plan if r.add - self.db.imported_total(r.game, RYUJINX) >= 60]
+        return len(rows), pending_seconds(self.db, plan)
 
     def clear_cover(self, game: str):
         self._remove_cover_file(game)
@@ -361,6 +447,8 @@ class MainWindow(QMainWindow):
         if game != self.last_game:
             self.tray.setIcon(QIcon(app_icon(active=bool(cur))))
             self.last_game = game
+            if game and self.cfg.get("auto_cover", True):
+                self.auto_cover(game)
             if self.isVisible():
                 self.refresh_current()
         elif self.isVisible():

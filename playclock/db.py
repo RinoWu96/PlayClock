@@ -37,6 +37,9 @@ class DB:
         self.con = sqlite3.connect(str(path))
         self.con.row_factory = sqlite3.Row
         self.con.executescript(SCHEMA)
+        cols = {r[1] for r in self.con.execute("PRAGMA table_info(sessions)")}
+        if "source" not in cols:  # v0.1 had no imported sessions
+            self.con.execute("ALTER TABLE sessions ADD COLUMN source TEXT")
         with self.con:
             for old, new in RENAMED_EMULATORS.items():
                 self.con.execute("UPDATE sessions SET emulator=? WHERE emulator=?", (new, old))
@@ -88,7 +91,7 @@ class DB:
 
     def recent_session(self, game: str, since: float) -> sqlite3.Row | None:
         return self.con.execute(
-            "SELECT * FROM sessions WHERE game=? AND end>=? ORDER BY end DESC LIMIT 1",
+            "SELECT * FROM sessions WHERE game=? AND end>=? AND source IS NULL ORDER BY end DESC LIMIT 1",
             (game, since)).fetchone()
 
     def update_session(self, sid: int, end: float, seconds: float) -> None:
@@ -104,8 +107,27 @@ class DB:
 
     def drop_short(self, min_seconds: float, keep_id: int | None = None) -> None:
         with self.con:
-            self.con.execute("DELETE FROM sessions WHERE seconds<? AND id IS NOT ?",
+            self.con.execute("DELETE FROM sessions WHERE seconds<? AND id IS NOT ? AND source IS NULL",
                              (min_seconds, keep_id))
+
+    # --- imported history ----------------------------------------------------
+    def tracked_total(self, game: str) -> float:
+        return self.con.execute("SELECT COALESCE(SUM(seconds), 0) FROM sessions WHERE game=? AND source IS NULL",
+                                (game,)).fetchone()[0]
+
+    def imported_total(self, game: str, source: str) -> float:
+        return self.con.execute("SELECT COALESCE(SUM(seconds), 0) FROM sessions WHERE game=? AND source=?",
+                                (game, source)).fetchone()[0]
+
+    def replace_import(self, game: str, emulator: str, source: str, seconds: float, end: float | None) -> None:
+        """One imported session per (game, source); re-importing replaces it."""
+        with self.con:
+            self.con.execute("DELETE FROM sessions WHERE game=? AND source=?", (game, source))
+            if seconds > 0:
+                end = end or time.time()
+                self.con.execute(
+                    "INSERT INTO sessions(game, emulator, start, end, seconds, source) VALUES(?,?,?,?,?,?)",
+                    (game, emulator, end - seconds, end, seconds, source))
 
     # --- queries -----------------------------------------------------------
     def game_stats(self, since: float = 0) -> list[sqlite3.Row]:
