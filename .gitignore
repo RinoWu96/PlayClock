@@ -1,0 +1,12 @@
+# environment / build output
+.venv/
+build/
+dist/
+*.spec
+build.log
+icon.ico
+__pycache__/
+.pytest_cache/
+
+# user data (play history, covers, config) when running from source
+data/
