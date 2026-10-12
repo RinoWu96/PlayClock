@@ -91,7 +91,7 @@ EN = {
     "历史记录": "History",
     "统计": "Stats",
     "设置": "Settings",
-    "打开主界面": "Open EmuPlaytime",
+    "打开主界面": "Open PlayClock",
     "退出": "Quit",
     "正在游玩：{game}\n本次 {t}": "Playing: {game}\nThis session {t}",
     "等待游戏启动": "Waiting for a game",
@@ -100,7 +100,7 @@ EN = {
     "本次 {t}": "This session {t}",
     "检测出错：{e}": "Detection error: {e}",
     "已最小化到系统托盘，会继续在后台记录。右键托盘图标可以退出。":
-        "EmuPlaytime keeps tracking from the system tray. Right-click the tray icon to quit.",
+        "PlayClock keeps tracking from the system tray. Right-click the tray icon to quit.",
     # menus and dialogs
     "查看详情": "View details",
     "设置封面…": "Set cover…",
@@ -130,7 +130,7 @@ EN = {
     "现在没有在玩游戏": "Not playing anything right now",
     "在模拟器里启动游戏后会自动开始计时，无需任何操作。\n关闭窗口后程序会留在系统托盘继续记录。":
         "Start a game in a supported emulator and tracking begins automatically.\n"
-        "Closing this window keeps EmuPlaytime running in the system tray.",
+        "Closing this window keeps PlayClock running in the system tray.",
     "● 游玩中": "● Playing",
     "这段时间还没有记录": "Nothing recorded in this period",
     "暂无数据": "No data yet",

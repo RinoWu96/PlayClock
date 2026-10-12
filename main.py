@@ -1,6 +1,6 @@
 import sys
 
-from emuplaytime.app import main
+from playclock.app import main
 
 if __name__ == "__main__":
     sys.exit(main())

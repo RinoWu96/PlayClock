@@ -25,8 +25,8 @@ from .ui import theme
 from .ui.pages import GamePage, HistoryPage, HomePage, LibraryPage, SettingsPage, StatsPage
 from .ui.widgets import app_icon, cover_pixmap, fmt_dur, icon, label
 
-APP_NAME = "EmuPlaytime"
-APP_TITLE = "EmuPlaytime"
+APP_NAME = "PlayClock"
+APP_TITLE = "PlayClock"
 BASE = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
 DATA = BASE / "data"
 COVERS = DATA / "covers"

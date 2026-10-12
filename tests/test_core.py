@@ -1,7 +1,7 @@
-from emuplaytime.db import DB
-from emuplaytime.rules import DEFAULT_RULES, Rule
-from emuplaytime.tracker import Tracker
-from emuplaytime.winapi import Window
+from playclock.db import DB
+from playclock.rules import DEFAULT_RULES, Rule
+from playclock.tracker import Tracker
+from playclock.winapi import Window
 
 RULES = [Rule.from_dict(d) for d in DEFAULT_RULES]
 
@@ -97,7 +97,7 @@ def test_foreground_only(tmp_path):
 
 def test_user_rules(tmp_path):
     import json
-    from emuplaytime.rules import ensure_user_file, load_rules
+    from playclock.rules import ensure_user_file, load_rules
     path = tmp_path / "rules.user.json"
     ensure_user_file(path)
     assert [r.name for r in load_rules(path)] == [d["name"] for d in DEFAULT_RULES]

@@ -2,9 +2,9 @@ import ast
 import re
 from pathlib import Path
 
-from emuplaytime import i18n
+from playclock import i18n
 
-SRC = Path(__file__).resolve().parent.parent / "emuplaytime"
+SRC = Path(__file__).resolve().parent.parent / "playclock"
 CJK = re.compile(r"[一-鿿]")
 # Chinese that is data, not UI: title-matching regexes, the user-rules help text, legacy-name migration,
 # the language picker's own "中文" label, and the i18n module itself.
@@ -50,7 +50,7 @@ def test_no_untranslated_chinese_in_ui():
 
 
 def test_nav_labels_translated():
-    from emuplaytime.app import MainWindow
+    from playclock.app import MainWindow
     assert all(text in i18n.EN for _, text in MainWindow.NAV)
 
 
