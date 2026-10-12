@@ -87,7 +87,7 @@ class KeyGuideDialog(Dialog):
                                 tr("在网站右上角点「Login」，可以直接用 Steam 账号登录，完全免费。"), open_site))
         open_key = _button(tr("打开 API 页面"), slot=lambda: QDesktopServices.openUrl(QUrl(KEY_URL)))
         self.lay.addWidget(Step(2, tr("生成 API Key"),
-                                tr("在打开的「API」设置页点击「Generate API Key」，然后复制生成的那一串密钥。"), open_key))
+                                tr("登录后再点一次「打开 API 页面」（没登录时会跳到登录页），点击「Generate API Key」，复制生成的密钥。也可以在网站右上角头像 → Preferences → API 找到。"), open_key))
         step3 = Step(3, tr("粘贴到这里"), tr("密钥只保存在这台电脑上，不会上传到别处。"))
         row = QHBoxLayout()
         self.edit = QLineEdit(current_key)

@@ -264,8 +264,8 @@ EN = {
         "Click “Login” at the top right. You can sign in with your Steam account, and it's free.",
     "打开 API 页面": "Open API page",
     "生成 API Key": "Generate an API key",
-    "在打开的「API」设置页点击「Generate API Key」，然后复制生成的那一串密钥。":
-        "On the “API” preferences page, click “Generate API Key” and copy the key it shows.",
+    "登录后再点一次「打开 API 页面」（没登录时会跳到登录页），点击「Generate API Key」，复制生成的密钥。也可以在网站右上角头像 → Preferences → API 找到。":
+        "Once signed in, click “Open API page” again (it shows the login page until you sign in), click “Generate API Key” and copy the key. You can also get there from your avatar at the top right → Preferences → API.",
     "粘贴到这里": "Paste it here",
     "密钥只保存在这台电脑上，不会上传到别处。": "The key is stored only on this PC and isn't sent anywhere else.",
     "粘贴 API Key": "Paste API key",
