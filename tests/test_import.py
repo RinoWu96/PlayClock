@@ -74,3 +74,11 @@ def test_import_follows_aliases_and_survives_tracking(tmp_path):
     assert db.get_session(t.current.sid)["source"] is None
     db.drop_short(10 ** 9)
     assert db.imported_total("Nice Name", "ryujinx") == 3000
+
+
+def test_english_title_keeps_latin_tail():
+    from playclock.covers import english_with_tail
+    assert english_with_tail("Dragon Quest III", "勇者鬥惡龍III HD-2D Remake") == "Dragon Quest III HD-2D Remake"
+    assert english_with_tail("The Legend of Zelda: Echoes of Wisdom", "薩爾達傳說 智慧的再現") == \
+        "The Legend of Zelda: Echoes of Wisdom"
+    assert english_with_tail("Octopath Traveler (video game)", "八方旅人") == "Octopath Traveler"

@@ -10,3 +10,6 @@ __pycache__/
 
 # user data (play history, covers, config) when running from source
 data/
+
+# local backups of user data
+backup/

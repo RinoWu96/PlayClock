@@ -1,10 +1,9 @@
 """The pages shown in the main window's content area."""
 import time
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QFormLayout, QGridLayout, QHBoxLayout, QHeaderView, QLineEdit, QMenu,
-    QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QFormLayout, QHBoxLayout, QHeaderView, QLineEdit, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from . import theme

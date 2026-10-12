@@ -6,10 +6,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
-    QBrush, QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+    QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
 )
 from PySide6.QtWidgets import (
-    QAbstractButton, QFrame, QHBoxLayout, QLabel, QLayout, QSizePolicy, QToolTip, QVBoxLayout, QWidget,
+    QAbstractButton, QFrame, QHBoxLayout, QLabel, QLayout, QToolTip, QVBoxLayout, QWidget,
 )
 
 from . import theme
@@ -32,6 +32,11 @@ def fmt_date(ts: float, with_time: bool = True) -> str:
 # --------------------------------------------------------------------------- covers
 
 _pixmaps: dict[str, QPixmap] = {}
+
+
+def clear_caches() -> None:
+    """Free decoded cover images (called when the window closes)."""
+    _pixmaps.clear()
 
 
 def cover_pixmap(path: Path | None) -> QPixmap | None:

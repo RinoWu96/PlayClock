@@ -41,6 +41,13 @@ def test_no_untranslated_chinese_in_ui():
         translated = {id(n) for arg in tr_calls(tree) for n in ast.walk(arg)}
         nav = {id(n) for node in ast.walk(tree) if isinstance(node, ast.Assign)
                and any(getattr(t, "id", None) == "NAV" for t in node.targets) for n in ast.walk(node)}
+        # docstrings and regex patterns are not UI text
+        docs = {id(node.body[0].value) for node in ast.walk(tree)
+                if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef)) and node.body
+                and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant)}
+        regex = {id(node.args[0]) for node in ast.walk(tree) if isinstance(node, ast.Call) and node.args
+                 and getattr(node.func, "attr", None) in {"compile", "search", "match", "fullmatch", "sub"}}
+        nav |= docs | regex
         for node in ast.walk(tree):
             if (isinstance(node, ast.Constant) and isinstance(node.value, str) and CJK.search(node.value)
                     and id(node) not in translated and id(node) not in nav

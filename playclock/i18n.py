@@ -271,8 +271,9 @@ EN = {
     "粘贴 API Key": "Paste API key",
     "粘贴": "Paste",
     "显示": "Show",
-    "搜索封面时会把游戏名发送给 SteamGridDB；不使用封面功能时 PlayClock 不会联网。":
-        "Searching for covers sends game names to SteamGridDB. PlayClock doesn't go online otherwise.",
+    "搜索封面时会把游戏名发送给 SteamGridDB（中文、日文名还会发给维基百科查英文名）；不使用封面功能时 PlayClock 不会联网。":
+        "Searching for covers sends game names to SteamGridDB (and Chinese/Japanese names to Wikipedia to look up "
+        "the English title). PlayClock doesn't go online otherwise.",
     "验证并保存": "Verify and save",
     "取消": "Cancel",
     "请先粘贴 API Key。": "Paste your API key first.",
@@ -282,6 +283,7 @@ EN = {
     "没有找到匹配的游戏，换个名字试试（英文名通常更容易搜到）。":
         "No matching games. Try another name (English titles usually work best).",
     "选择左侧的游戏，再点击喜欢的封面。": "Pick a game on the left, then click the cover you like.",
+    "已按英文名「{name}」搜索。": "Searched by the English title “{name}”.",
     "正在加载封面…": "Loading covers…",
     "共 {n} 张封面，点击即可使用。": ("{n} cover. Click it to use it.", "{n} covers. Click one to use it."),
     "这个游戏还没有横版封面，试试其他搜索结果。": "This game has no landscape covers yet. Try another result.",

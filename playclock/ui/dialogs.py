@@ -1,6 +1,6 @@
 """Dialogs: SteamGridDB key guide, online cover search, emulator history import."""
-from PySide6.QtCore import QRectF, QSize, Qt, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QRectF, Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QDialog, QFileDialog, QFrame, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QPushButton, QScrollArea,
     QTableWidgetItem, QVBoxLayout, QWidget,
@@ -103,7 +103,7 @@ class KeyGuideDialog(Dialog):
         row.addWidget(show)
         step3.body.addLayout(row)
         self.lay.addWidget(step3)
-        self.lay.addWidget(label(tr("搜索封面时会把游戏名发送给 SteamGridDB；不使用封面功能时 PlayClock 不会联网。"),
+        self.lay.addWidget(label(tr("搜索封面时会把游戏名发送给 SteamGridDB（中文、日文名还会发给维基百科查英文名）；不使用封面功能时 PlayClock 不会联网。"),
                                  "faint", wrap=True))
         self.ok = _button(tr("验证并保存"), "primary", self.verify)
         self.footer(_button(tr("取消"), slot=self.reject), self.ok)
@@ -185,11 +185,11 @@ class Thumb(QWidget):
 class CoverSearchDialog(Dialog):
     """Search SteamGridDB by name, pick a game, click a grid image -> self.image holds its bytes."""
 
-    def __init__(self, parent, key: str, game: str):
+    def __init__(self, parent, client: SteamGridDB, game: str):
         super().__init__(parent, tr("在线搜索封面"), 980)
         self.resize(1040, 680)
         self.image = None
-        self.client = SteamGridDB(key, self)
+        self.client = client
         self.lay.addWidget(label(tr("为「{game}」选择封面", game=game), "sectionTitle"))
         row = QHBoxLayout()
         self.query = QLineEdit(game)
@@ -227,7 +227,7 @@ class CoverSearchDialog(Dialog):
         self.grid.clear()
         self.set_status(tr("正在搜索…"))
 
-        def done(games, err):
+        def done(games, err, used):
             if not isValid(self):
                 return
             if err:
@@ -236,14 +236,15 @@ class CoverSearchDialog(Dialog):
             if not games:
                 self.set_status(tr("没有找到匹配的游戏，换个名字试试（英文名通常更容易搜到）。"))
                 return
-            self.set_status(tr("选择左侧的游戏，再点击喜欢的封面。"))
+            self.set_status((tr("已按英文名「{name}」搜索。", name=used) + " " if used != term else "")
+                            + tr("选择左侧的游戏，再点击喜欢的封面。"))
             for g in games:
                 it = QListWidgetItem(f"{g['name']}  ({g['year']})" if g["year"] else g["name"])
                 it.setData(Qt.UserRole, g["id"])
                 self.results.addItem(it)
             self.results.setCurrentRow(0)
 
-        self.client.search(term, done)
+        self.client.search_any(term, done)
 
     def pick_game(self, item, _prev=None):
         if not item:

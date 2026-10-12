@@ -1,4 +1,6 @@
-"""Main window, tray icon and application entry point."""
+"""Entry point. A small always-on Controller (tracker, tray, timer) plus a main window that only exists
+while it is open — closing it frees all UI memory, so the background footprint stays minimal."""
+import gc
 import json
 import os
 import sys
@@ -7,7 +9,7 @@ import uuid
 import winreg
 from pathlib import Path
 
-from PySide6.QtCore import QLibraryInfo, QPoint, QSize, Qt, QTimer, QTranslator
+from PySide6.QtCore import QLibraryInfo, QObject, QPoint, QSize, Qt, QTimer, QTranslator
 from PySide6.QtGui import QIcon, QImage
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
@@ -15,18 +17,14 @@ from PySide6.QtWidgets import (
     QPushButton, QStackedWidget, QSystemTrayIcon, QTableWidget, QVBoxLayout, QWidget,
 )
 
-from . import __version__
-from . import i18n
-from .covers import SteamGridDB
+from . import __version__, i18n
 from .db import DB
-from .importers import RYUJINX, apply_import, pending_seconds, plan_import, ryujinx_roots, scan_ryujinx
-from .i18n import tr
+from .i18n import fmt_dur, tr
 from .rules import ensure_user_file, load_rules, write_builtin_reference
 from .tracker import Tracker
+from .winapi import trim_memory
 from .ui import theme
-from .ui.dialogs import CoverSearchDialog, ImportDialog, KeyGuideDialog
-from .ui.pages import GamePage, HistoryPage, HomePage, LibraryPage, SettingsPage, StatsPage
-from .ui.widgets import app_icon, cover_pixmap, fmt_dur, icon, label
+from .ui.widgets import app_icon
 
 APP_NAME = "PlayClock"
 APP_TITLE = "PlayClock"
@@ -81,19 +79,215 @@ def set_autostart(on: bool) -> None:
                 pass
 
 
+_qt_translator = None
+
+
+def apply_language(app: QApplication, lang: str) -> None:
+    """Set our strings' language and load Qt's own translation (dialog buttons etc.)."""
+    global _qt_translator
+    i18n.set_language(lang)
+    if _qt_translator:
+        app.removeTranslator(_qt_translator)
+        _qt_translator = None
+    if lang == "zh":
+        t = QTranslator(app)
+        if t.load("qtbase_zh_CN", QLibraryInfo.path(QLibraryInfo.TranslationsPath)):
+            app.installTranslator(t)
+            _qt_translator = t
+
+
+# --------------------------------------------------------------------------- background
+
+
+class Controller(QObject):
+    """Everything that runs while PlayClock sits in the tray."""
+
+    def __init__(self, db: DB, tracker: Tracker, cfg: dict):
+        super().__init__()
+        self.db, self.tracker, self.cfg = db, tracker, cfg
+        self.window = None
+        self.last_game = None
+        self._sgdb = None
+        self.cover_tried: set[str] = set()
+
+        self.tray = QSystemTrayIcon(QIcon(app_icon()), self)
+        self.tray.activated.connect(
+            lambda r: self.show_window() if r in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick) else None)
+        self.build_tray_menu()
+        self.tray.show()
+
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.on_tick)
+        self.timer.start(int(self.cfg["interval"] * 1000))
+        self.on_tick()
+
+    def build_tray_menu(self):
+        self.menu = QMenu()
+        self.menu.addAction(tr("打开主界面"), self.show_window)
+        self.menu.addSeparator()
+        self.menu.addAction(tr("退出"), self.quit)
+        self.tray.setContextMenu(self.menu)
+
+    def set_cfg(self, key, value):
+        self.cfg[key] = value
+        save_config(self.cfg)
+
+    def set_interval(self, v):
+        self.set_cfg("interval", v)
+        self.timer.setInterval(v * 1000)
+
+    def on_tick(self):
+        try:
+            cur = self.tracker.tick()
+        except Exception as e:  # never let one bad poll kill the tracker
+            self.tray.setToolTip(f"{APP_TITLE}\n" + tr("检测出错：{e}", e=e))
+            return
+        game = cur.game if cur else None
+        tip = tr("正在游玩：{game}\n本次 {t}", game=game, t=fmt_dur(cur.seconds)) if cur else tr("等待游戏启动")
+        self.tray.setToolTip(f"{APP_TITLE}\n{tip}")
+        changed = game != self.last_game
+        if changed:
+            self.tray.setIcon(QIcon(app_icon(active=bool(cur))))
+            self.last_game = game
+            if game and self.cfg.get("auto_cover", True):
+                self.auto_cover(game)
+        if self.window:  # the UI reads the DB, so keep it current while visible
+            self.tracker.flush()
+            self.window.on_tick(changed)
+
+    def changed(self):
+        """Data changed outside the window (cover downloaded, import...)."""
+        if self.window:
+            self.window.refresh_current()
+
+    # --- covers --------------------------------------------------------------
+    def sgdb_key(self) -> str:
+        return self.cfg.get("sgdb_key", "")
+
+    @property
+    def sgdb(self):
+        from .covers import SteamGridDB  # network stack only when covers are used
+        if self._sgdb is None:
+            self._sgdb = SteamGridDB(self.sgdb_key(), self)
+        self._sgdb.key = self.sgdb_key()
+        return self._sgdb
+
+    def save_cover(self, game: str, img: QImage) -> bool:
+        if img.isNull():
+            return False
+        if img.width() > 1280:
+            img = img.scaledToWidth(1280, Qt.SmoothTransformation)
+        COVERS.mkdir(parents=True, exist_ok=True)
+        name = f"{uuid.uuid4().hex}.png"
+        img.save(str(COVERS / name))
+        self.remove_cover_file(game)
+        self.db.set_cover(game, name)
+        self.changed()
+        return True
+
+    def remove_cover_file(self, game: str):
+        old = self.db.get_cover(game)
+        if old:
+            try:
+                (COVERS / old).unlink()
+            except OSError:
+                pass
+
+    def auto_cover(self, game: str, done=None):
+        """Fetch the best-guess cover for a game that has none (once per game per run)."""
+        if not self.sgdb_key() or self.db.get_cover(game) or game in self.cover_tried:
+            if done:
+                done()
+            return
+        self.cover_tried.add(game)
+
+        def got(data, _err):
+            if data and not self.db.get_cover(game):
+                self.save_cover(game, QImage.fromData(data))
+            if done:
+                done()
+
+        self.sgdb.first_cover(game, got)
+
+    def fill_missing_covers(self, parent=None):
+        missing = [g for g in self.db.games() if not self.db.get_cover(g)]
+        self.cover_tried.difference_update(missing)
+        if not missing:
+            QMessageBox.information(parent, APP_TITLE, tr("所有游戏都已经有封面了。"))
+            return
+        before = len(missing)
+
+        def next_one():
+            if missing:
+                self.auto_cover(missing.pop(0), next_one)
+            else:
+                still = sum(1 for g in self.db.games() if not self.db.get_cover(g))
+                self.tray.showMessage(APP_TITLE, tr("已为 {n} 款游戏补全封面。", n=before - still),
+                                      QSystemTrayIcon.Information, 3000)
+
+        next_one()
+
+    # --- window lifecycle ------------------------------------------------------
+    def show_window(self, page: str = "home", geometry=None):
+        if self.window is None:
+            self.window = MainWindow(self)
+            if geometry is not None:
+                self.window.setGeometry(geometry)
+            self.window.go(page)
+        self.window.showNormal()
+        self.window.raise_()
+        self.window.activateWindow()
+
+    def window_closed(self):
+        """The window is gone: drop it and everything it cached."""
+        self.window = None
+        from .ui import widgets
+        widgets.clear_caches()
+        QTimer.singleShot(500, self.release_memory)
+        if not self.cfg.get("tray_hint_shown"):
+            self.tray.showMessage(APP_TITLE, tr("已最小化到系统托盘，会继续在后台记录。右键托盘图标可以退出。"),
+                                  QSystemTrayIcon.Information, 4000)
+            self.set_cfg("tray_hint_shown", True)
+
+    def release_memory(self):
+        if self.window is None:
+            gc.collect()
+            trim_memory()
+
+    def set_language(self, setting: str):
+        """Reopen the window in the new language; tracking keeps running."""
+        self.set_cfg("language", setting)
+        lang = i18n.resolve(setting)
+        if lang == i18n.LANG:
+            return
+        apply_language(QApplication.instance(), lang)
+        self.build_tray_menu()
+        if self.window:
+            geo = self.window.geometry()
+            self.window.close()
+            QTimer.singleShot(0, lambda: self.show_window("settings", geo))
+
+    def quit(self):
+        self.timer.stop()
+        self.tracker.stop()
+        self.tray.hide()
+        QApplication.quit()
+
+
+# --------------------------------------------------------------------------- window
+
+
 class MainWindow(QMainWindow):
     NAV = [("home", "概览"), ("library", "游戏库"), ("history", "历史记录"), ("stats", "统计"), ("settings", "设置")]
 
-    def __init__(self, db: DB, tracker: Tracker, cfg: dict, rebuild=None):
+    def __init__(self, ctrl: Controller):
         super().__init__()
-        self.db, self.tracker, self.cfg = db, tracker, cfg
-        self.rebuild = rebuild
-        self.sgdb = SteamGridDB(cfg.get("sgdb_key", ""), self)
-        self.cover_tried: set[str] = set()
+        from .ui.pages import GamePage, HistoryPage, HomePage, LibraryPage, SettingsPage, StatsPage
+        self.ctrl = ctrl
+        self.db, self.tracker, self.cfg = ctrl.db, ctrl.tracker, ctrl.cfg
         self.app_title, self.version, self.data_dir = APP_TITLE, __version__, DATA
-        self.quitting = False
-        self.last_game = None
         self.prev_page = "home"
+        self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle(f"{APP_TITLE} · {tr('模拟器游戏时长记录')}")
         self.setWindowIcon(QIcon(app_icon()))
         self.resize(1240, 820)
@@ -114,27 +308,14 @@ class MainWindow(QMainWindow):
         h.addWidget(self.stack, 1)
         self.setCentralWidget(root)
 
-        self.tray = QSystemTrayIcon(QIcon(app_icon()), self)
-        menu = QMenu()
-        menu.addAction(tr("打开主界面"), self.show_window)
-        menu.addSeparator()
-        menu.addAction(tr("退出"), self.quit)
-        self.tray.setContextMenu(menu)
-        self.tray.activated.connect(
-            lambda r: self.show_window() if r in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick) else None)
-        self.tray.show()
-
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.on_tick)
-        self.timer.start(int(self.cfg["interval"] * 1000))
-        self.clock = QTimer(self)          # 1 s UI clock for the "now playing" timer
+        self.clock = QTimer(self)  # 1 s session clock; dies with the window
         self.clock.timeout.connect(self.on_clock)
         self.clock.start(1000)
-        self.on_tick()
-        self.go("home")
+        self.update_side()
 
     # --- layout ------------------------------------------------------------
     def _build_sidebar(self):
+        from .ui.widgets import icon, label
         side = QFrame()
         side.setObjectName("sidebar")
         side.setFixedWidth(232)
@@ -168,21 +349,20 @@ class MainWindow(QMainWindow):
             self.nav_buttons[key] = b
             v.addWidget(b)
         v.addStretch()
-        self.side_status = QFrame()
-        self.side_status.setObjectName("card")
-        sv = QVBoxLayout(self.side_status)
+        status = QFrame()
+        status.setObjectName("card")
+        sv = QVBoxLayout(status)
         sv.setContentsMargins(14, 12, 14, 12)
         sv.setSpacing(2)
         self.side_state = label("", "faint")
         self.side_game = label("", None)
         self.side_game.setStyleSheet("font-weight: 600;")
         self.side_time = label("", "muted")
-        sv.addWidget(self.side_state)
-        sv.addWidget(self.side_game)
-        sv.addWidget(self.side_time)
-        self.side_status.setCursor(Qt.PointingHandCursor)
-        self.side_status.mouseReleaseEvent = lambda e: self.current_game() and self.open_game(self.current_game())
-        v.addWidget(self.side_status)
+        for w in (self.side_state, self.side_game, self.side_time):
+            sv.addWidget(w)
+        status.setCursor(Qt.PointingHandCursor)
+        status.mouseReleaseEvent = lambda e: self.current_game() and self.open_game(self.current_game())
+        v.addWidget(status)
         return side
 
     def go(self, key: str):
@@ -204,10 +384,27 @@ class MainWindow(QMainWindow):
         self.current_page().refresh()
 
     # --- context API used by pages -------------------------------------------
+    # Background actions live on the controller; pages reach them through the window.
+    def set_cfg(self, key, value):
+        self.ctrl.set_cfg(key, value)
+
+    def set_interval(self, v):
+        self.ctrl.set_interval(v)
+
+    def set_language(self, setting):
+        self.ctrl.set_language(setting)
+
+    def sgdb_key(self):
+        return self.ctrl.sgdb_key()
+
+    def fill_missing_covers(self):
+        self.ctrl.fill_missing_covers(self)
+
     def current_game(self):
         return self.tracker.current.game if self.tracker.current else None
 
     def cover(self, game: str):
+        from .ui.widgets import cover_pixmap
         name = self.db.get_cover(game)
         return cover_pixmap(COVERS / name) if name else None
 
@@ -215,11 +412,11 @@ class MainWindow(QMainWindow):
         page = self.pages["game"]
         page.show_game(game)
         self.stack.setCurrentWidget(page)
-        for b in self.nav_buttons.values():
-            if b.isChecked():
-                self.nav.setExclusive(False)
-                b.setChecked(False)
-                self.nav.setExclusive(True)
+        checked = self.nav.checkedButton()
+        if checked:
+            self.nav.setExclusive(False)
+            checked.setChecked(False)
+            self.nav.setExclusive(True)
 
     def game_menu(self, game: str, pos: QPoint):
         m = QMenu(self)
@@ -243,31 +440,18 @@ class MainWindow(QMainWindow):
     def choose_cover(self, game: str):
         path, _ = QFileDialog.getOpenFileName(self, tr("为「{game}」选择封面", game=game), "",
                                               tr("图片") + " (*.png *.jpg *.jpeg *.webp *.bmp)")
-        if not path:
-            return
-        if not self.save_cover(game, QImage(path)):
+        if path and not self.ctrl.save_cover(game, QImage(path)):
             QMessageBox.warning(self, APP_TITLE, tr("无法读取这张图片。"))
 
-    def save_cover(self, game: str, img: QImage) -> bool:
-        if img.isNull():
-            return False
-        if img.width() > 1280:
-            img = img.scaledToWidth(1280, Qt.SmoothTransformation)
-        COVERS.mkdir(parents=True, exist_ok=True)
-        name = f"{uuid.uuid4().hex}.png"
-        img.save(str(COVERS / name))
-        self._remove_cover_file(game)
-        self.db.set_cover(game, name)
+    def clear_cover(self, game: str):
+        self.ctrl.remove_cover_file(game)
+        self.db.set_cover(game, None)
         self.refresh_current()
-        return True
-
-    # --- SteamGridDB -------------------------------------------------------
-    def sgdb_key(self) -> str:
-        return self.cfg.get("sgdb_key", "")
 
     def connect_sgdb(self) -> bool:
         """Show the key guide; True once a verified key is saved."""
-        dlg = KeyGuideDialog(self, self.sgdb_key())
+        from .ui.dialogs import KeyGuideDialog
+        dlg = KeyGuideDialog(self, self.ctrl.sgdb_key())
         if dlg.exec() and dlg.key:
             self.set_cfg("sgdb_key", dlg.key)
             self.refresh_current()
@@ -279,51 +463,16 @@ class MainWindow(QMainWindow):
         self.refresh_current()
 
     def search_cover(self, game: str):
-        if not self.sgdb_key() and not self.connect_sgdb():
+        from .ui.dialogs import CoverSearchDialog
+        if not self.ctrl.sgdb_key() and not self.connect_sgdb():
             return
-        dlg = CoverSearchDialog(self, self.sgdb_key(), game)
-        if dlg.exec() and dlg.image:
-            img = QImage.fromData(dlg.image)
-            if not self.save_cover(game, img):
-                QMessageBox.warning(self, APP_TITLE, tr("无法读取这张图片。"))
+        dlg = CoverSearchDialog(self, self.ctrl.sgdb, game)
+        if dlg.exec() and dlg.image and not self.ctrl.save_cover(game, QImage.fromData(dlg.image)):
+            QMessageBox.warning(self, APP_TITLE, tr("无法读取这张图片。"))
 
-    def auto_cover(self, game: str, done=None):
-        """Fetch the best-guess cover for a game that has none (once per game per run)."""
-        if not self.sgdb_key() or self.db.get_cover(game) or game in self.cover_tried:
-            if done:
-                done()
-            return
-        self.cover_tried.add(game)
-
-        def got(data, _err):
-            if data and not self.db.get_cover(game):
-                self.save_cover(game, QImage.fromData(data))
-            if done:
-                done()
-
-        self.sgdb.key = self.sgdb_key()
-        self.sgdb.first_cover(game, got)
-
-    def fill_missing_covers(self):
-        missing = [g for g in self.db.games() if not self.db.get_cover(g)]
-        self.cover_tried.difference_update(missing)
-        if not missing:
-            QMessageBox.information(self, APP_TITLE, tr("所有游戏都已经有封面了。"))
-            return
-        before = len(missing)
-
-        def next_one():
-            if missing:
-                self.auto_cover(missing.pop(0), next_one)
-            else:
-                still = len([g for g in self.db.games() if not self.db.get_cover(g)])
-                self.tray.showMessage(APP_TITLE, tr("已为 {n} 款游戏补全封面。", n=before - still),
-                                      QSystemTrayIcon.Information, 3000)
-
-        next_one()
-
-    # --- history import ------------------------------------------------------
     def open_import(self):
+        from .importers import apply_import, plan_import, ryujinx_roots, scan_ryujinx
+        from .ui.dialogs import ImportDialog
         dlg = ImportDialog(self, self.db, ryujinx_roots(), scan_ryujinx, plan_import, apply_import)
         if dlg.exec():
             QMessageBox.information(self, APP_TITLE, tr("已导入 {n} 款游戏的游玩记录。", n=dlg.imported))
@@ -331,6 +480,7 @@ class MainWindow(QMainWindow):
 
     def ryujinx_pending(self) -> tuple[int, float]:
         """(games, seconds) Ryujinx has recorded that PlayClock doesn't have yet."""
+        from .importers import RYUJINX, pending_seconds, plan_import, ryujinx_roots, scan_ryujinx
         roots = ryujinx_roots()
         if not roots:
             return 0, 0.0
@@ -338,25 +488,11 @@ class MainWindow(QMainWindow):
         rows = [r for r in plan if r.add - self.db.imported_total(r.game, RYUJINX) >= 60]
         return len(rows), pending_seconds(self.db, plan)
 
-    def clear_cover(self, game: str):
-        self._remove_cover_file(game)
-        self.db.set_cover(game, None)
-        self.refresh_current()
-
-    def _remove_cover_file(self, game: str):
-        old = self.db.get_cover(game)
-        if old:
-            try:
-                (COVERS / old).unlink()
-            except OSError:
-                pass
-
     def rename_game(self, game: str):
-        games = self.db.games()
         dlg = QInputDialog(self)
         dlg.setWindowTitle(tr("重命名 / 合并"))
         dlg.setLabelText(tr("「{game}」的新名称：\n输入已有游戏的名称即可把两者合并，以后识别到的同名游戏也会自动归入。", game=game))
-        dlg.setComboBoxItems(games)
+        dlg.setComboBoxItems(self.db.games())
         dlg.setComboBoxEditable(True)
         dlg.setTextValue(game)
         dlg.resize(460, 160)
@@ -365,7 +501,8 @@ class MainWindow(QMainWindow):
         new = dlg.textValue().strip()
         if new and new != game:
             if self.db.get_cover(new) and self.db.get_cover(game):
-                self._remove_cover_file(game)
+                self.ctrl.remove_cover_file(game)
+            self.tracker.flush()
             self.db.rename_game(game, new)
             if self.current_page() is self.pages["game"]:
                 self.pages["game"].game = new
@@ -376,7 +513,7 @@ class MainWindow(QMainWindow):
             return
         if self.current_game() == game:
             self.tracker.current = None
-        self._remove_cover_file(game)
+        self.ctrl.remove_cover_file(game)
         self.db.delete_game(game)
         if self.current_page() is self.pages["game"]:
             self.back()
@@ -399,14 +536,6 @@ class MainWindow(QMainWindow):
             set_autostart(on)
         except OSError as e:
             QMessageBox.warning(self, APP_TITLE, tr("设置开机启动失败：{e}", e=e))
-
-    def set_cfg(self, key, value):
-        self.cfg[key] = value
-        save_config(self.cfg)
-
-    def set_interval(self, v):
-        self.set_cfg("interval", v)
-        self.timer.setInterval(v * 1000)
 
     def edit_rules(self):
         ensure_user_file(USER_RULES_PATH)
@@ -432,38 +561,19 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, APP_TITLE, tr("已导出 {n} 条记录。", n=n))
 
     # --- ticking -----------------------------------------------------------
-    def on_tick(self):
-        try:
-            cur = self.tracker.tick()
-        except Exception as e:  # never let one bad poll kill the tracker
-            self.side_state.setText(tr("检测出错：{e}", e=e))
-            return
-        game = cur.game if cur else None
-        if cur:
-            tip = tr("正在游玩：{game}\n本次 {t}", game=cur.game, t=fmt_dur(cur.seconds))
+    def on_tick(self, game_changed: bool):
+        if game_changed:
+            self.refresh_current()
         else:
-            tip = tr("等待游戏启动")
-        self.tray.setToolTip(f"{APP_TITLE}\n{tip}")
-        if game != self.last_game:
-            self.tray.setIcon(QIcon(app_icon(active=bool(cur))))
-            self.last_game = game
-            if game and self.cfg.get("auto_cover", True):
-                self.auto_cover(game)
-            if self.isVisible():
-                self.refresh_current()
-        elif self.isVisible():
             self.current_page().on_tick()
         self.update_side()
 
     def on_clock(self):
         """Advance the visible session clock between polls."""
         cur = self.tracker.current
-        if not cur or not self.isVisible():
-            return
         page = self.pages["home"]
-        if self.current_page() is page and self.tracker.last_tick:
-            extra = min(time.time() - self.tracker.last_tick, self.cfg["interval"])
-            page.hero.seconds = cur.seconds + extra
+        if cur and self.current_page() is page and self.tracker.last_tick:
+            page.hero.seconds = cur.seconds + min(time.time() - self.tracker.last_tick, self.cfg["interval"])
             page.hero.update()
 
     def update_side(self):
@@ -472,73 +582,20 @@ class MainWindow(QMainWindow):
             self.side_state.setText(tr("●  正在记录"))
             self.side_state.setStyleSheet(f"color: {theme.GREEN}; font-size: 9pt;")
             self.side_game.setText(self.side_game.fontMetrics().elidedText(cur.game, Qt.ElideRight, 170))
-            self.side_game.show()
             self.side_time.setText(tr("本次 {t}", t=fmt_dur(cur.seconds)))
-            self.side_time.show()
         else:
             self.side_state.setText(tr("○  等待游戏启动"))
             self.side_state.setStyleSheet(f"color: {theme.FAINT}; font-size: 9pt;")
-            self.side_game.hide()
-            self.side_time.hide()
-
-    # --- window / tray -----------------------------------------------------
-    def show_window(self):
-        self.showNormal()
-        self.raise_()
-        self.activateWindow()
-        self.refresh_current()
+        self.side_game.setVisible(bool(cur))
+        self.side_time.setVisible(bool(cur))
 
     def closeEvent(self, e):
-        if self.quitting:
-            e.accept()
-            return
-        e.ignore()
-        self.hide()
-        if not self.cfg.get("tray_hint_shown"):
-            self.tray.showMessage(APP_TITLE, tr("已最小化到系统托盘，会继续在后台记录。右键托盘图标可以退出。"),
-                                  QSystemTrayIcon.Information, 4000)
-            self.set_cfg("tray_hint_shown", True)
-
-    def set_language(self, setting: str):
-        """Switch UI language right away by rebuilding the window; tracking keeps running."""
-        self.set_cfg("language", setting)
-        lang = i18n.resolve(setting)
-        if lang != i18n.LANG and self.rebuild:
-            apply_language(QApplication.instance(), lang)
-            QTimer.singleShot(0, lambda: self.rebuild(self))
-
-    def dispose(self):
-        """Tear down without quitting the app (used when the window is rebuilt)."""
-        self.quitting = True
-        self.timer.stop()
         self.clock.stop()
-        self.tray.hide()
-        self.close()
-        self.deleteLater()
-
-    def quit(self):
-        self.quitting = True
-        self.timer.stop()
-        self.tracker.stop()
-        self.tray.hide()
-        QApplication.quit()
+        super().closeEvent(e)
+        self.ctrl.window_closed()
 
 
-_qt_translator = None
-
-
-def apply_language(app: QApplication, lang: str) -> None:
-    """Set our strings' language and load Qt's own translation (dialog buttons etc.)."""
-    global _qt_translator
-    i18n.set_language(lang)
-    if _qt_translator:
-        app.removeTranslator(_qt_translator)
-        _qt_translator = None
-    if lang == "zh":
-        t = QTranslator(app)
-        if t.load("qtbase_zh_CN", QLibraryInfo.path(QLibraryInfo.TranslationsPath)):
-            app.installTranslator(t)
-            _qt_translator = t
+# --------------------------------------------------------------------------- main
 
 
 def main():
@@ -571,23 +628,17 @@ def main():
     try:
         rules = load_rules(USER_RULES_PATH)
     except Exception as e:  # bad JSON / regex typed by the user: fall back to built-ins
-        QMessageBox.warning(None, APP_TITLE, tr("自定义规则文件有错误，本次只使用内置规则：\n{path}\n\n{e}", path=USER_RULES_PATH, e=e))
+        QMessageBox.warning(None, APP_TITLE, tr("自定义规则文件有错误，本次只使用内置规则：\n{path}\n\n{e}",
+                                                path=USER_RULES_PATH, e=e))
         rules = load_rules()
-    tracker = Tracker(db, rules, cfg)
-    holder = {}
 
-    def rebuild(old: MainWindow):
-        new = MainWindow(db, tracker, cfg, rebuild)
-        new.setGeometry(old.geometry())
-        visible = old.isVisible()
-        old.dispose()
-        holder["win"] = new
-        new.go("settings")
-        if visible:
-            new.show_window()
-
-    holder["win"] = MainWindow(db, tracker, cfg, rebuild)
-    server.newConnection.connect(lambda: (server.nextPendingConnection(), holder["win"].show_window()))
+    ctrl = Controller(db, Tracker(db, rules, cfg), cfg)
+    # Shutdown / logoff usually ends a tray app without a normal quit: write the running session first.
+    app.commitDataRequest.connect(lambda _m: ctrl.tracker.flush())
+    app.aboutToQuit.connect(ctrl.tracker.stop)
+    server.newConnection.connect(lambda: (server.nextPendingConnection(), ctrl.show_window()))
     if "--minimized" not in sys.argv:
-        holder["win"].show_window()
+        ctrl.show_window()
+    else:
+        QTimer.singleShot(3000, ctrl.release_memory)
     return app.exec()

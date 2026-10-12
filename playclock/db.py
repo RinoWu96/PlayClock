@@ -73,9 +73,6 @@ class DB:
         row = self.con.execute("SELECT cover FROM meta WHERE game=?", (game,)).fetchone()
         return row["cover"] if row else None
 
-    def covers(self) -> dict[str, str]:
-        return {r["game"]: r["cover"] for r in self.con.execute("SELECT * FROM meta WHERE cover IS NOT NULL")}
-
     def set_cover(self, game: str, cover: str | None) -> None:
         with self.con:
             self.con.execute("INSERT INTO meta(game, cover) VALUES(?, ?) ON CONFLICT(game) DO UPDATE SET cover=excluded.cover",
@@ -105,10 +102,10 @@ class DB:
         with self.con:
             self.con.execute("DELETE FROM sessions WHERE id=?", (sid,))
 
-    def drop_short(self, min_seconds: float, keep_id: int | None = None) -> None:
+    def drop_short(self, min_seconds: float) -> None:
+        """Remove tracked sessions too short to keep (leftovers of a crash); imported ones stay."""
         with self.con:
-            self.con.execute("DELETE FROM sessions WHERE seconds<? AND id IS NOT ? AND source IS NULL",
-                             (min_seconds, keep_id))
+            self.con.execute("DELETE FROM sessions WHERE seconds<? AND source IS NULL", (min_seconds,))
 
     # --- imported history ----------------------------------------------------
     def tracked_total(self, game: str) -> float:

@@ -21,6 +21,8 @@ class Current:
     game: str
     emulator: str
     seconds: float
+    end: float = 0.0       # last time counted (in memory; written on flush)
+    saved: float = 0.0     # when the row was last written
 
 
 def detect(rules: list[Rule], windows: list[Window]) -> tuple[list[Detection], list[tuple[str, Window]]]:
@@ -51,6 +53,8 @@ def detect(rules: list[Rule], windows: list[Window]) -> tuple[list[Detection], l
 
 
 class Tracker:
+    FLUSH_EVERY = 30  # seconds between DB writes while a game runs (a crash loses at most this much)
+
     def __init__(self, db: DB, rules: list[Rule], cfg: dict):
         self.db = db
         self.rules = rules
@@ -89,7 +93,9 @@ class Tracker:
 
         if self.current and game == self.current.game and continuous:
             self.current.seconds += dt
-            self.db.update_session(self.current.sid, now, self.current.seconds)
+            self.current.end = now
+            if now - self.current.saved >= self.FLUSH_EVERY:
+                self.flush()
             return self.current
 
         self.stop()
@@ -97,11 +103,19 @@ class Tracker:
             resume_gap = float(self.cfg.get("resume_gap", 180))
             prev = self.db.recent_session(game, now - resume_gap)
             if prev:
-                self.current = Current(prev["id"], game, prev["emulator"], prev["seconds"])
-                self.db.update_session(prev["id"], now, prev["seconds"])
+                self.current = Current(prev["id"], game, prev["emulator"], prev["seconds"], now)
+                self.flush()
             else:
-                self.current = Current(self.db.start_session(game, d.emulator, now), game, d.emulator, 0.0)
+                sid = self.db.start_session(game, d.emulator, now)
+                self.current = Current(sid, game, d.emulator, 0.0, now, now)
         return self.current
+
+    def flush(self) -> None:
+        """Write the running session to the DB."""
+        c = self.current
+        if c:
+            self.db.update_session(c.sid, c.end, c.seconds)
+            c.saved = c.end
 
     def stop(self) -> None:
         """End the current session; drop it if it is shorter than min_session."""
@@ -109,4 +123,6 @@ class Tracker:
             return
         if self.current.seconds < float(self.cfg.get("min_session", 60)):
             self.db.delete_session(self.current.sid)
+        else:
+            self.flush()
         self.current = None

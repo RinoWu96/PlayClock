@@ -80,6 +80,7 @@ def test_resume_and_rename(tmp_path):
     db.rename_game("Game A", "游戏甲")
     t.tick(140, playing)
     t.tick(145, playing)
+    t.flush()
     assert [r["game"] for r in db.game_stats()] == ["游戏甲"]
     assert db.game_stats()[0]["total"] == 95
 
@@ -114,3 +115,17 @@ def test_user_rules(tmp_path):
     ryu = rules[0]
     assert ryu.game_from_title("MY Game") == "Game" and ryu.game_from_title("Ryujinx 1.1 - Game") is None
     assert load_rules(None)[0].name == DEFAULT_RULES[0]["name"]
+
+
+def test_writes_are_batched(tmp_path):
+    db = DB(tmp_path / "t.db")
+    t = Tracker(db, RULES, {"interval": 5, "min_session": 0})
+    playing = [win("Ryujinx 1.1 - Game A")]
+    for i in range(0, 30, 5):          # 25 s of play: still only in memory
+        t.tick(i, playing)
+    assert db.sessions()[0]["seconds"] == 0 and t.current.seconds == 25
+    t.tick(30, playing)                # 30 s since the row was written -> flushed
+    assert db.sessions()[0]["seconds"] == 30
+    t.tick(35, playing)
+    t.tick(40, [])                     # game closed -> final state written
+    assert db.sessions()[0]["seconds"] == 35 and db.sessions()[0]["end"] == 35

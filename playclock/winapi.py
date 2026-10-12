@@ -32,6 +32,9 @@ kernel32.QueryFullProcessImageNameW.argtypes = [wt.HANDLE, wt.DWORD, wt.LPWSTR, 
 kernel32.QueryFullProcessImageNameW.restype = wt.BOOL
 kernel32.CloseHandle.argtypes = [wt.HANDLE]
 kernel32.CloseHandle.restype = wt.BOOL
+kernel32.GetCurrentProcess.restype = wt.HANDLE
+kernel32.SetProcessWorkingSetSize.argtypes = [wt.HANDLE, ctypes.c_size_t, ctypes.c_size_t]
+kernel32.SetProcessWorkingSetSize.restype = wt.BOOL
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 GW_OWNER = 4
@@ -46,6 +49,10 @@ class Window:
     area: int
     minimized: bool
     foreground: bool
+
+
+# pid -> exe name, kept across polls (pruned to live pids) so processes aren't reopened every few seconds.
+_exe_cache: dict[int, str] = {}
 
 
 def _exe_name(pid: int) -> str:
@@ -66,7 +73,6 @@ def list_windows() -> list[Window]:
     """Visible, un-owned, titled top-level windows of other processes."""
     own_pid = os.getpid()
     fg = user32.GetForegroundWindow() or 0
-    exe_cache: dict[int, str] = {}
     out: list[Window] = []
 
     def cb(hwnd, _lparam):
@@ -81,16 +87,24 @@ def list_windows() -> list[Window]:
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         if pid.value == own_pid:
             return True
-        if pid.value not in exe_cache:
-            exe_cache[pid.value] = _exe_name(pid.value)
+        if pid.value not in _exe_cache:
+            _exe_cache[pid.value] = _exe_name(pid.value)
         r = wt.RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(r))
         out.append(Window(
-            hwnd=int(hwnd), pid=pid.value, exe=exe_cache[pid.value], title=buf.value,
+            hwnd=int(hwnd), pid=pid.value, exe=_exe_cache[pid.value], title=buf.value,
             area=max(0, r.right - r.left) * max(0, r.bottom - r.top),
             minimized=bool(user32.IsIconic(hwnd)), foreground=int(hwnd) == int(fg),
         ))
         return True
 
     user32.EnumWindows(EnumWindowsProc(cb), 0)
+    live = {w.pid for w in out}
+    for pid in [p for p in _exe_cache if p not in live]:
+        del _exe_cache[pid]
     return out
+
+
+def trim_memory() -> None:
+    """Let Windows page out memory this process isn't using (after the window closes / at startup)."""
+    kernel32.SetProcessWorkingSetSize(kernel32.GetCurrentProcess(), ctypes.c_size_t(-1), ctypes.c_size_t(-1))

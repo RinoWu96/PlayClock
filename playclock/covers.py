@@ -1,9 +1,12 @@
 """SteamGridDB client (cover art). Async via QNetworkAccessManager; callbacks run on the GUI thread.
 
 API docs: https://www.steamgriddb.com/api/v2 — every call needs the user's own API key.
+Chinese/Japanese titles rarely match on SteamGridDB, so they are first translated to the English title
+via Wikipedia's interlanguage links (free, no key).
 """
 import json
-from urllib.parse import quote
+import re
+from urllib.parse import quote, urlencode
 
 from PySide6.QtCore import QObject, QUrl
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
@@ -14,6 +17,9 @@ from .i18n import tr
 API = "https://www.steamgriddb.com/api/v2"
 SITE_URL = "https://www.steamgriddb.com/"
 KEY_URL = "https://www.steamgriddb.com/profile/preferences/api"
+CJK = re.compile(r"[぀-ヿ㐀-鿿가-힯]")
+KANA = re.compile(r"[぀-ヿ]")
+HANGUL = re.compile(r"[가-힯]")
 # Landscape grids match PlayClock's 16:9-ish cards best.
 GRID_QUERY = "dimensions=920x430,460x215&types=static&nsfw=false&humor=false"
 
@@ -26,7 +32,7 @@ class SteamGridDB(QObject):
 
     def _get(self, url: str, cb, raw: bool = False):
         req = QNetworkRequest(QUrl(url))
-        req.setRawHeader(b"User-Agent", f"PlayClock/{__version__}".encode())
+        req.setRawHeader(b"User-Agent", f"PlayClock/{__version__} (https://github.com/RinoWu96/PlayClock)".encode())
         if not raw:
             req.setRawHeader(b"Authorization", f"Bearer {self.key}".encode())
         req.setTransferTimeout(20000)
@@ -88,9 +94,45 @@ class SteamGridDB(QObject):
         """cb(bytes | None, error)"""
         self._get(url, cb, raw=True)
 
+    def english_title(self, term: str, cb):
+        """English title of a CJK game name via Wikipedia, or None. cb(str | None)"""
+        lang = "ja" if KANA.search(term) else "ko" if HANGUL.search(term) else "zh"
+        q = urlencode({"action": "query", "format": "json", "generator": "search", "gsrsearch": term,
+                       "gsrlimit": 1, "prop": "langlinks", "lllang": "en", "redirects": 1})
+
+        def done(data, err):
+            try:
+                pages = json.loads(data)["query"]["pages"].values() if data else []
+                en = next((p["langlinks"][0]["*"] for p in pages if p.get("langlinks")), None)
+            except (ValueError, KeyError, TypeError):
+                en = None
+            cb(english_with_tail(en, term) if en else None)
+
+        self._get(f"https://{lang}.wikipedia.org/w/api.php?{q}", done, raw=True)
+
+    def search_any(self, term: str, cb):
+        """search(), trying the English title first for CJK names. cb(games, error, term_used)"""
+        if not CJK.search(term):
+            self.search(term, lambda games, err: cb(games, err, term))
+            return
+
+        def got_english(en):
+            if not en:
+                self.search(term, lambda games, err: cb(games, err, term))
+                return
+
+            def got(games, err):
+                if games:
+                    cb(games, err, en)
+                else:
+                    self.search(term, lambda g2, e2: cb(g2, e2, term))
+            self.search(en, got)
+
+        self.english_title(term, got_english)
+
     def first_cover(self, term: str, cb):
         """Best guess for automatic covers: first search hit, its first grid. cb(bytes | None, error)"""
-        def got_games(games, err):
+        def got_games(games, err, _used=None):
             if err or not games:
                 cb(None, err)
                 return
@@ -102,4 +144,17 @@ class SteamGridDB(QObject):
                 return
             self.download(grids[0]["url"], cb)
 
-        self.search(term, got_games)
+        self.search_any(term, got_games)
+
+
+def english_with_tail(en: str, original: str) -> str:
+    """Wikipedia often names the base game ("Dragon Quest III" for "勇者鬥惡龍III HD-2D Remake"):
+    keep the Latin words at the end of the original that the English title lacks, and drop
+    disambiguators like "(video game)"."""
+    en = re.sub(r"\s*\((?:\d{4} )?video game\)$", "", en).strip()
+    tail = re.search(r"[A-Za-z0-9][A-Za-z0-9 .:'&+\-]*$", original)
+    if tail:
+        missing = [w for w in tail.group().split() if w.lower() not in en.lower()]
+        if missing:
+            en = f"{en} {' '.join(missing)}"
+    return en
