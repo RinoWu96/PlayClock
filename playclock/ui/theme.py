@@ -71,12 +71,12 @@ QPushButton#seg:hover {{ color: {TEXT}; }}
 QPushButton#seg:checked {{ background: {CARD_HOVER}; color: {TEXT}; font-weight: 600; }}
 #segBar {{ background: {CARD}; border: 1px solid {BORDER}; border-radius: 10px; }}
 
-QLineEdit, QComboBox, QSpinBox {{
+QLineEdit, QComboBox, QSpinBox, QDateEdit {{
     background: {CARD}; border: 1px solid {BORDER}; border-radius: 9px; padding: 7px 10px;
     selection-background-color: {ACCENT};
 }}
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{ border-color: {ACCENT}; }}
-QComboBox::drop-down {{ border: none; width: 24px; }}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDateEdit:focus {{ border-color: {ACCENT}; }}
+QComboBox::drop-down, QDateEdit::drop-down {{ border: none; width: 24px; }}
 QComboBox QAbstractItemView {{
     background: {CARD}; border: 1px solid {BORDER}; selection-background-color: {CARD_HOVER}; padding: 4px;
 }}

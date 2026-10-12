@@ -85,7 +85,7 @@ def weekday(i: int) -> str:
 
 EN = {
     # app / navigation / tray
-    "模拟器游戏时长记录": "Emulator playtime tracker",
+    "游戏时长记录": "Game playtime tracker",
     "概览": "Overview",
     "游戏库": "Library",
     "历史记录": "History",
@@ -177,7 +177,6 @@ EN = {
     "游玩记录": "Play sessions",
     "游戏": "Game",
     "模拟器": "Emulator",
-    "模拟器##section": "Emulators",
     "开始": "Start",
     "结束": "End",
     "时长": "Duration",
@@ -316,4 +315,31 @@ EN = {
     "共 {n} 款游戏，将导入 {t}。": ("{n} game, {t} to import.", "{n} games, {t} to import."),
     "这个文件夹里没有找到游玩记录。": "No play history found in this folder.",
     "已导入 {n} 款游戏的游玩记录。": ("Imported play history for {n} game.", "Imported play history for {n} games."),
+    # Steam, platforms, manual time
+    "平台": "Platform",
+    "从 Steam 导入…": "Import from Steam…",
+    "这台电脑上没有找到 Steam 的游玩记录。": "No Steam play history was found on this PC.",
+    "以后自动同步这个账号的 Steam 时长": "Keep this account's Steam playtime in sync automatically",
+    "检测到这台电脑上的 Steam，可以把 Steam 游戏的游玩时长一起导入。":
+        "Steam is installed on this PC. Import your Steam playtime to see everything in one place.",
+    "Steam 自动同步：已开启（账号 {acc}），Steam 记录有变化时会自动更新。":
+        "Steam sync is on (account {acc}). PlayClock updates whenever Steam's records change.",
+    "Steam 自动同步：未开启。导入 Steam 时可以选择开启。": "Steam sync is off. You can turn it on when importing from Steam.",
+    "正在联网查询 {n} 个游戏的名字…": ("Looking up the name of {n} game online…", "Looking up the names of {n} games online…"),
+    "另有 {n} 个应用查不到名字，已跳过。": ("{n} more app has no known name and was skipped.",
+                                     "{n} more apps have no known name and were skipped."),
+    "添加时长": "Add time",
+    "添加游玩时长": "Add playtime",
+    "记录在主机或其他设备上玩的时间，比如 Switch、PS5。时长可以对照主机「个人资料」或 PS App 里显示的数字填写。":
+        "Record time played on consoles or other devices, like a Switch or PS5. "
+        "Use the figure your console's profile page or the PS App shows.",
+    "游戏名": "Game name",
+    " 小时": " h",
+    " 分钟": " min",
+    "最后游玩日期": "Last played on",
+    "添加": "Add",
+    "请填写游戏名、平台和时长。": "Enter a game name, platform and duration.",
+    "从 Steam 等平台导入的历史时长没有具体日期，只计入总时长和排行，不计入趋势、日均和游玩天数。":
+        "Imported history (from Steam and others) has no dates, so it counts toward totals and rankings "
+        "but not the trend chart, daily average or days played.",
 }

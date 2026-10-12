@@ -1,6 +1,8 @@
 # PlayClock · 模拟器游戏时长记录
 
-托盘常驻，每隔几秒读取模拟器窗口标题识别正在运行的游戏，把游玩时长记到本地 SQLite。
+托盘常驻的游戏时长记录：读取模拟器窗口标题识别正在运行的游戏并计时；还可导入 Steam、Ryujinx 自带的时长记录，以及手动添加主机上的时长。数据全部保存在本地 SQLite。
+
+工作原理、数据格式、统计口径和「怎么加一个新模拟器」见 [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md)。推送代码后 GitHub Actions 会在 Windows 上自动跑测试。
 
 - 运行：`dist\PlayClock\PlayClock.exe`（数据在它旁边的 `data\`：`playtime.db`、`rules.user.json`、`config.json`、`covers\`）
 - 环境：`uv venv --python 3.11 .venv` 后 `uv pip install --python .venv\Scripts\python.exe -r requirements.txt`
@@ -17,6 +19,7 @@
 | `playclock/db.py` | 会话、别名（重命名/合并）、封面元数据、各类统计查询 |
 | `playclock/i18n.py` | 界面中英文：源文本是中文，`EN` 表是英文；`tests/test_i18n.py` 会检查漏翻 |
 | `playclock/covers.py` | SteamGridDB 客户端（用户自己的 API Key，QNetworkAccessManager 异步） |
+| `playclock/steam.py` | 读本机 Steam 的时长（`localconfig.vdf`）和游戏名 / 类型（二进制 `appinfo.vdf`），封面用 Steam 横幅 |
 | `playclock/importers.py` | 导入模拟器自带的时长记录（Ryujinx `games/*/gui/metadata.json`）；只补差额、可重复导入 |
 | `playclock/ui/` | 主题、自绘组件（封面、卡片、图表）、各页面、对话框（SteamGridDB 引导、封面搜索、导入预览） |
 | `playclock/app.py` | 主窗口、托盘、单实例、开机自启 |

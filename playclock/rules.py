@@ -10,6 +10,7 @@ Each rule:
   ignore    regexes; a title matching any of them is "no game running" (menus, settings...)
   fallback  label recorded when the emulator has a window but no game is recognised
             (null = don't record anything)
+  platform  console the emulator plays (shown in the library instead of the emulator name)
 """
 import fnmatch
 import json
@@ -24,45 +25,45 @@ COMMON_IGNORE = [
 ]
 
 DEFAULT_RULES = [
-    {"name": "Ryujinx", "exe": ["ryujinx*.exe"],
+    {"name": "Ryujinx", "platform": "Switch", "exe": ["ryujinx*.exe"],
      "pattern": r"^Ryujinx\b.*?\s[-|]\s+(?P<game>.+)$"},
-    {"name": "yuzu & forks", "exe": ["yuzu*.exe", "suyu*.exe", "sudachi*.exe", "citron*.exe", "eden*.exe", "torzu*.exe"],
+    {"name": "yuzu & forks", "platform": "Switch", "exe": ["yuzu*.exe", "suyu*.exe", "sudachi*.exe", "citron*.exe", "eden*.exe", "torzu*.exe"],
      "pattern": r"^[^|]+\|\s*(?:v?\d+(?:\.\d+)+[\w\-]*\s*\|\s*)?(?P<game>[^|]+?)\s*\|"},
-    {"name": "Citra & forks", "exe": ["citra-qt*.exe", "citra*.exe", "lime3ds*.exe", "azahar*.exe", "mandarine*.exe"],
+    {"name": "Citra & forks", "platform": "3DS", "exe": ["citra-qt*.exe", "citra*.exe", "lime3ds*.exe", "azahar*.exe", "mandarine*.exe"],
      # "Citra Nightly 1985 | Game"; build segments like "HEAD-1a2b3c4" or "2104" are skipped
      "pattern": r"^[^|]+(?:\|\s*(?:(?i:HEAD|master|nightly|canary)\S*|v?\d[\w.\-]*)\s*(?=\|))*\|\s*(?P<game>[^|]+?)\s*(?:\||$)",
      "ignore": [r"(?i)^[^|]+(?:\|\s*(?:HEAD|master|nightly|canary)\S*\s*)+$"]},
-    {"name": "Dolphin", "exe": ["dolphin*.exe"],
+    {"name": "Dolphin", "platform": "GameCube / Wii", "exe": ["dolphin*.exe"],
      "pattern": r"^Dolphin[^|]*\|.*\|\s*(?P<game>[^|]+?)\s*$"},
-    {"name": "PCSX2", "exe": ["pcsx2*.exe"],
+    {"name": "PCSX2", "platform": "PS2", "exe": ["pcsx2*.exe"],
      "ignore": [r"(?i)^PCSX2\b"]},
-    {"name": "DuckStation", "exe": ["duckstation*.exe"],
+    {"name": "DuckStation", "platform": "PS1", "exe": ["duckstation*.exe"],
      "ignore": [r"(?i)^DuckStation\b"]},
-    {"name": "PPSSPP", "exe": ["ppsspp*.exe"],
+    {"name": "PPSSPP", "platform": "PSP", "exe": ["ppsspp*.exe"],
      "pattern": r"^PPSSPP[^-]*-\s*(?:[A-Z]{4}\d{5}\s*:\s*)?(?P<game>.+)$"},
-    {"name": "RPCS3", "exe": ["rpcs3*.exe"],
+    {"name": "RPCS3", "platform": "PS3", "exe": ["rpcs3*.exe"],
      "pattern": r"\|\s*(?P<game>[^|]+?\[[A-Z]{4}\d{5}\])\s*$"},
-    {"name": "Cemu", "exe": ["cemu*.exe"],
+    {"name": "Cemu", "platform": "Wii U", "exe": ["cemu*.exe"],
      "pattern": r"\[TitleId:[^\]]*\]\s*(?P<game>.+)$"},
-    {"name": "Vita3K", "exe": ["vita3k*.exe"],
+    {"name": "Vita3K", "platform": "PS Vita", "exe": ["vita3k*.exe"],
      "pattern": r"^Vita3K[^|]*\|\s*(?P<game>[^|]+?)\s*(?:\||$)"},
-    {"name": "Xenia", "exe": ["xenia*.exe"],
+    {"name": "Xenia", "platform": "Xbox 360", "exe": ["xenia*.exe"],
      "pattern": r"^Xenia[^:]*:\s*(?P<game>.+?)(?:\s*<[^>]*>)?\s*$"},
-    {"name": "melonDS", "exe": ["melonds*.exe"],
+    {"name": "melonDS", "platform": "NDS", "exe": ["melonds*.exe"],
      "pattern": r"^melonDS[^-]*-\s*(?P<game>.+)$"},
-    {"name": "mGBA", "exe": ["mgba*.exe"],
+    {"name": "mGBA", "platform": "GBA", "exe": ["mgba*.exe"],
      "pattern": r"^mGBA - (?P<game>.+?)(?: - [\d.]+)?$", "ignore": [r"^mGBA - [\d.]+$"]},
-    {"name": "Snes9x", "exe": ["snes9x*.exe"],
+    {"name": "Snes9x", "platform": "SNES", "exe": ["snes9x*.exe"],
      "pattern": r"^Snes9[xX][^-]*-\s*(?P<game>.+)$"},
-    {"name": "Project64", "exe": ["project64*.exe"],
+    {"name": "Project64", "platform": "N64", "exe": ["project64*.exe"],
      "pattern": r"^(?P<game>.+?)\s*-\s*Project64"},
-    {"name": "Mesen", "exe": ["mesen*.exe"],
+    {"name": "Mesen", "platform": "NES", "exe": ["mesen*.exe"],
      "pattern": r"^Mesen[^-]*-\s*(?P<game>.+)$"},
-    {"name": "Flycast", "exe": ["flycast*.exe"],
+    {"name": "Flycast", "platform": "Dreamcast", "exe": ["flycast*.exe"],
      "pattern": r"^Flycast[^-]*-\s*(?P<game>.+)$"},
-    {"name": "shadPS4", "exe": ["shadps4*.exe"],
+    {"name": "shadPS4", "platform": "PS4", "exe": ["shadps4*.exe"],
      "pattern": r"^shadPS4[^|]*\|\s*(?P<game>[^|]+?)\s*(?:\||$)"},
-    {"name": "RetroArch", "exe": ["retroarch*.exe"],
+    {"name": "RetroArch", "platform": "RetroArch", "exe": ["retroarch*.exe"],
      "pattern": r"\|\|\s*(?P<game>[^|]+?)\s*(?:\|\||$)",
      "ignore": [r"(?i)\|\|\s*[\d.]+\s*fps"],
      "fallback": "RetroArch (unrecognized game)"},
@@ -98,6 +99,7 @@ class Rule:
     pattern: re.Pattern | None = None
     ignore: list[re.Pattern] = field(default_factory=list)
     fallback: str | None = None
+    platform: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "Rule":
@@ -108,6 +110,7 @@ class Rule:
             ignore=[re.compile(p) for p in d.get("ignore", [])]
             + ([] if d.get("pattern") else [re.compile(p) for p in COMMON_IGNORE]),
             fallback=d.get("fallback"),
+            platform=d.get("platform"),
         )
 
     def matches_exe(self, exe: str) -> bool:
@@ -160,6 +163,11 @@ def merge_rules(user: list[dict], builtin: list[dict] = DEFAULT_RULES) -> list[d
     """User rules first (minus disabled markers), then built-ins not replaced or disabled by name."""
     names = {r["name"] for r in user}
     return [r for r in user if not r.get("disabled")] + [r for r in builtin if r["name"] not in names]
+
+
+def platform_map(rules: list["Rule"]) -> dict[str, str]:
+    """Emulator name -> platform. Names that aren't emulators (Steam, manual entries) map to themselves."""
+    return {r.name: r.platform for r in rules if r.platform}
 
 
 def load_rules(user_path: Path | None = None) -> list[Rule]:

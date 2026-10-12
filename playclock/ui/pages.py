@@ -1,7 +1,7 @@
 """The pages shown in the main window's content area."""
 import time
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QFormLayout, QHBoxLayout, QHeaderView, QLineEdit, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
@@ -25,6 +25,20 @@ def week_start() -> float:
 def month_start() -> float:
     lt = time.localtime()
     return time.mktime((lt.tm_year, lt.tm_mon, 1, 0, 0, 0, 0, 0, -1))
+
+
+def platforms_of(ctx, emulators: str | None) -> list[str]:
+    """Distinct platforms of a game's comma-joined emulator list, in order."""
+    out = []
+    for e in (emulators or "").split(","):
+        p = ctx.platform_of(e)
+        if e and p not in out:
+            out.append(p)
+    return out
+
+
+def platforms_badge(ctx, emulators: str | None) -> str:
+    return " · ".join(platforms_of(ctx, emulators))
 
 
 def daily_points(rows):
@@ -95,11 +109,11 @@ def make_table(headers: list[str]) -> QTableWidget:
     return t
 
 
-def fill_sessions(t: QTableWidget, rows, with_game: bool = True):
+def fill_sessions(t: QTableWidget, rows, platform_label, with_game: bool = True):
     t.setRowCount(len(rows))
     for i, r in enumerate(rows):
         cells = ([r["game"]] if with_game else []) + [
-            r["emulator"], fmt_date(r["start"]), fmt_date(r["end"]), fmt_dur(r["seconds"])]
+            platform_label(r["emulator"]), fmt_date(r["start"]), fmt_date(r["end"]), fmt_dur(r["seconds"])]
         for j, text in enumerate(cells):
             it = QTableWidgetItem(text)
             it.setData(Qt.UserRole, r["id"])
@@ -126,7 +140,7 @@ class HomePage(Page):
         b_import = QPushButton(tr("导入"))
         b_import.setObjectName("primary")
         b_import.setCursor(Qt.PointingHandCursor)
-        b_import.clicked.connect(ctx.open_import)
+        b_import.clicked.connect(lambda: ctx.open_import(self.banner_kind))
         b_dismiss = QPushButton(tr("不再提示"))
         b_dismiss.setObjectName("ghost")
         b_dismiss.setCursor(Qt.PointingHandCursor)
@@ -205,8 +219,8 @@ class HomePage(Page):
         recent = sorted(stats, key=lambda r: r["last"] or 0, reverse=True)[:8]
         playing = self.ctx.current_game()
         for r in recent:
-            card = GameCard(r["game"], r["emulators"], r["total"], r["last"], self.ctx.cover(r["game"]),
-                            r["game"] == playing)
+            card = GameCard(r["game"], platforms_badge(self.ctx, r["emulators"]), r["total"], r["last"],
+                            self.ctx.cover(r["game"]), r["game"] == playing)
             card.clicked.connect(self.ctx.open_game)
             card.menu_requested.connect(self.ctx.game_menu)
             self.recent.addWidget(card)
@@ -220,17 +234,15 @@ class HomePage(Page):
         self.chart_sum.setText(tr("合计 {t} · 日均 {a}", t=fmt_dur(s), a=fmt_dur(s / 14)))
 
     def update_banner(self):
-        if self.ctx.cfg.get("ryujinx_banner_dismissed"):
-            self.banner.hide()
-            return
-        n, secs = self.ctx.ryujinx_pending()
-        self.banner.setVisible(n > 0 and secs >= 300)
-        self.banner_text.setText(tr("在 Ryujinx 里发现 {n} 款游戏共 {t} 的游玩记录，导入后统计会更完整。",
-                                    n=n, t=fmt_dur(secs)))
+        tip = self.ctx.import_suggestion()
+        self.banner.setVisible(bool(tip))
+        if tip:
+            self.banner_text.setText(tip[0])
+            self.banner_kind = tip[1]
 
     def dismiss_banner(self):
-        self.ctx.set_cfg("ryujinx_banner_dismissed", True)
-        self.banner.hide()
+        self.ctx.set_cfg(f"{self.banner_kind}_banner_dismissed", True)
+        self.update_banner()
 
     def fit_recent(self):
         """Show only as many recent cards as fit on one row."""
@@ -263,6 +275,11 @@ class HomePage(Page):
 class LibraryPage(Page):
     def __init__(self, ctx):
         super().__init__(ctx, tr("游戏库"))
+        self.platform = None  # None = all
+        add = QPushButton("+  " + tr("添加时长"))
+        add.setCursor(Qt.PointingHandCursor)
+        add.clicked.connect(lambda: ctx.add_time())
+        self.head.addWidget(add)
         self.search = QLineEdit()
         self.search.setPlaceholderText(tr("搜索游戏"))
         self.search.addAction(icon("search"), QLineEdit.LeadingPosition)
@@ -273,6 +290,10 @@ class LibraryPage(Page):
         self.sort.changed.connect(lambda _: self.refresh())
         self.head.addWidget(self.search)
         self.head.addWidget(self.sort)
+        self.chips_box = QHBoxLayout()
+        self.chips_box.addStretch()
+        self.chips = None
+        self.lay.addLayout(self.chips_box)
         self.grid_box = QWidget()
         self.grid = FlowLayout(self.grid_box, 16)
         self.lay.addWidget(self.grid_box)
@@ -282,7 +303,10 @@ class LibraryPage(Page):
         self.lay.addStretch()
 
     def refresh(self):
-        rows = list(self.ctx.db.game_stats())
+        rows = [dict(r, platforms=platforms_of(self.ctx, r["emulators"])) for r in self.ctx.db.game_stats()]
+        self.build_chips(rows)
+        if self.platform:
+            rows = [r for r in rows if self.platform in r["platforms"]]
         q = self.search.text().strip().lower()
         if q:
             rows = [r for r in rows if q in r["game"].lower()]
@@ -296,14 +320,35 @@ class LibraryPage(Page):
         self.grid.clear()
         playing = self.ctx.current_game()
         for r in rows:
-            card = GameCard(r["game"], r["emulators"], r["total"], r["last"], self.ctx.cover(r["game"]),
-                            r["game"] == playing)
+            card = GameCard(r["game"], " · ".join(r["platforms"]), r["total"], r["last"],
+                            self.ctx.cover(r["game"]), r["game"] == playing)
             card.clicked.connect(self.ctx.open_game)
             card.menu_requested.connect(self.ctx.game_menu)
             self.grid.addWidget(card)
         self.empty.setVisible(not rows)
         self.empty.setText(tr("没有匹配的游戏" if q else "还没有记录到任何游戏"))
         self.grid_box.updateGeometry()
+
+    def build_chips(self, rows):
+        """One filter button per platform that has games, busiest first."""
+        counts: dict[str, int] = {}
+        for r in rows:
+            for p in r["platforms"]:
+                counts[p] = counts.get(p, 0) + 1
+        if self.platform not in counts:
+            self.platform = None
+        options = [(f"{tr('全部')}  {len(rows)}", None)] + \
+            [(f"{p}  {n}", p) for p, n in sorted(counts.items(), key=lambda kv: -kv[1])]
+        if self.chips:
+            self.chips.deleteLater()
+        self.chips = SegmentBar(options, self.platform) if self.platform else SegmentBar(options)
+        self.chips.changed.connect(self.pick_platform)
+        self.chips_box.insertWidget(0, self.chips)
+        self.chips.setVisible(len(counts) > 1)
+
+    def pick_platform(self, p):
+        self.platform = p
+        QTimer.singleShot(0, self.refresh)  # rebuild after the click finishes
 
 
 # --------------------------------------------------------------------------- game detail
@@ -350,10 +395,12 @@ class GamePage(Page):
         self.b_clear.clicked.connect(lambda: ctx.clear_cover(self.game))
         b_rename = QPushButton(tr("重命名 / 合并"))
         b_rename.clicked.connect(lambda: ctx.rename_game(self.game))
+        b_add = QPushButton(tr("添加时长"))
+        b_add.clicked.connect(lambda: ctx.add_time(self.game, self.default_platform()))
         b_del = QPushButton(tr("删除记录"))
         b_del.setObjectName("danger")
         b_del.clicked.connect(lambda: ctx.delete_game(self.game))
-        for b in (b_online, b_cover, self.b_clear, b_rename, b_del):
+        for b in (b_online, b_cover, self.b_clear, b_rename, b_add, b_del):
             b.setCursor(Qt.PointingHandCursor)
             btns.addWidget(b)
         btns.addStretch()
@@ -384,11 +431,15 @@ class GamePage(Page):
         self.lay.addWidget(chart_card)
 
         self.section(tr("游玩记录"))
-        self.table = make_table([tr("模拟器"), tr("开始"), tr("结束"), tr("时长")])
+        self.table = make_table([tr("平台"), tr("开始"), tr("结束"), tr("时长")])
         self.table.customContextMenuRequested.connect(
             lambda pos: ctx.session_menu(self.table, pos))
         self.lay.addWidget(self.table)
         self.lay.addStretch()
+
+    def default_platform(self):
+        d = self.ctx.db.game_detail(self.game)
+        return self.ctx.platform_of(d["emulators"].split(",")[0]) if d and d["emulators"] else ""
 
     def show_game(self, game):
         self.game = game
@@ -406,7 +457,8 @@ class GamePage(Page):
         self.cover.set(self.game, self.ctx.cover(self.game))
         self.b_clear.setVisible(bool(db.get_cover(self.game)))
         playing = self.ctx.current_game() == self.game
-        self.emu.setText((tr("● 正在游玩  ·  ") if playing else "") + d["emulators"].replace(",", " / "))
+        self.emu.setText((tr("● 正在游玩  ·  ") if playing else "")
+                         + " / ".join(self.ctx.platform_label(e) for e in d["emulators"].split(",")))
         self.emu.setStyleSheet(f"color: {theme.GREEN if playing else theme.MUTED};")
         self.name.setText(self.game)
         self.big.setText(fmt_dur(d["total"]))
@@ -417,7 +469,7 @@ class GamePage(Page):
         self.t_last.set(fmt_date(d["last"], False), fmt_ago(d["last"]))
         days = self.range.current()
         self.chart.set_data(daily_points(db.daily(days, self.game)))
-        fill_sessions(self.table, db.sessions(self.game), with_game=False)
+        fill_sessions(self.table, db.sessions(self.game), self.ctx.platform_label, with_game=False)
 
     def on_tick(self):
         if self.game and self.ctx.current_game() == self.game:
@@ -436,7 +488,7 @@ class HistoryPage(Page):
         self.filter.setMinimumWidth(260)
         self.filter.currentIndexChanged.connect(lambda _: self.refresh_table())
         self.head.addWidget(self.filter)
-        self.table = make_table([tr("游戏"), tr("模拟器"), tr("开始"), tr("结束"), tr("时长")])
+        self.table = make_table([tr("游戏"), tr("平台"), tr("开始"), tr("结束"), tr("时长")])
         self.table.customContextMenuRequested.connect(lambda pos: ctx.session_menu(self.table, pos))
         self.table.cellDoubleClicked.connect(lambda r, _: ctx.open_game(self.table.item(r, 0).text()))
         self.lay.addWidget(self.table)
@@ -455,7 +507,7 @@ class HistoryPage(Page):
     def refresh_table(self):
         game = self.filter.currentText() if self.filter.currentIndex() > 0 else None
         rows = self.ctx.db.sessions(game, limit=500)
-        fill_sessions(self.table, rows)
+        fill_sessions(self.table, rows, self.ctx.platform_label)
         self.subtitle.setText(tr("显示最近 {n} 条", n=len(rows)) + ("" if len(rows) < 500 else tr("（最多 500 条，可导出 CSV 查看全部）")))
 
 
@@ -485,6 +537,9 @@ class StatsPage(Page):
         trend.lay.addWidget(self.trend_title)
         self.chart = BarChart(230)
         trend.lay.addWidget(self.chart)
+        self.trend_note = label(tr("从 Steam 等平台导入的历史时长没有具体日期，只计入总时长和排行，不计入趋势、日均和游玩天数。"),
+                                "faint", wrap=True)
+        trend.lay.addWidget(self.trend_note)
         self.lay.addWidget(trend)
 
         row = QHBoxLayout()
@@ -496,7 +551,7 @@ class StatsPage(Page):
         games.lay.addWidget(self.rank)
         games.lay.addStretch()
         emus = Card()
-        emus.lay.addWidget(label(tr("模拟器##section"), "sectionTitle"))
+        emus.lay.addWidget(label(tr("平台"), "sectionTitle"))
         self.emu_rank = RankBars(colors=[theme.ACCENT_2, theme.GREEN, "#ffb547", "#4cc9f0", "#ff6b9a"])
         emus.lay.addWidget(self.emu_rank)
         emus.lay.addStretch()
@@ -522,19 +577,21 @@ class StatsPage(Page):
             span_days = days
         stats = db.game_stats(since)
         total = sum(r["total"] for r in stats)
-        played_days = db.con.execute(
-            "SELECT COUNT(DISTINCT date(start, 'unixepoch', 'localtime')) FROM sessions WHERE start>=?",
-            (since,)).fetchone()[0]
+        played_days = db.played_days(since)
         self.t_total.set(fmt_dur(total))
-        self.t_avg.set(fmt_dur(total / span_days))
+        self.t_avg.set(fmt_dur(db.total_since(since) / span_days))  # dated time only
+        self.trend_note.setVisible(db.has_imports())
         self.t_days.set(tr("{n} 天", n=played_days))
         self.t_games.set(tr("{n} 款", n=len(stats)))
         self.rank.set_rows([(r["game"], r["total"]) for r in stats[:10]])
-        self.emu_rank.set_rows([(r["emulator"], r["total"]) for r in db.emulator_stats(since)])
+        per_platform: dict[str, float] = {}
+        for r in db.emulator_stats(since):
+            p = self.ctx.platform_of(r["emulator"])
+            per_platform[p] = per_platform.get(p, 0) + r["total"]
+        self.emu_rank.set_rows(sorted(per_platform.items(), key=lambda kv: -kv[1]))
 
     def _first(self) -> float:
-        v = self.ctx.db.con.execute("SELECT MIN(start) FROM sessions").fetchone()[0]
-        return v or time.time()
+        return self.ctx.db.first_dated() or time.time()
 
     def _months_all(self) -> int:
         a, b = time.localtime(self._first()), time.localtime()
@@ -653,12 +710,15 @@ class SettingsPage(Page):
         history.lay.addWidget(label(tr("把模拟器自己记录的游玩时长导入 PlayClock，安装之前玩的时间也能算进统计。"
                                        "只补上 PlayClock 没记录到的部分，可以放心重复导入。"), "muted", wrap=True))
         h_row = QHBoxLayout()
-        b_ryu = QPushButton(tr("从 Ryujinx 导入…"))
-        b_ryu.setCursor(Qt.PointingHandCursor)
-        b_ryu.clicked.connect(ctx.open_import)
-        h_row.addWidget(b_ryu)
+        for text, kind in ((tr("从 Steam 导入…"), "steam"), (tr("从 Ryujinx 导入…"), "ryujinx")):
+            b = QPushButton(text)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=kind: ctx.open_import(k))
+            h_row.addWidget(b)
         h_row.addStretch()
         history.lay.addLayout(h_row)
+        self.steam_state = label("", "faint", wrap=True)
+        history.lay.addWidget(self.steam_state)
         self.lay.addWidget(history)
 
         data = Card(spacing=12)
@@ -687,6 +747,9 @@ class SettingsPage(Page):
         self.rules_label.setText(tr("支持：") + tr("、").join(r.name for r in self.ctx.tracker.rules)
                                  + tr("\n内置规则随软件版本更新；自己添加或修改的规则保存在 rules.user.json，更新时不会被覆盖。"))
         self.data_label.setText(tr("所有记录都只保存在本机：{path}", path=self.ctx.data_dir))
+        acc = self.ctx.cfg.get("steam_sync")
+        self.steam_state.setText(tr("Steam 自动同步：已开启（账号 {acc}），Steam 记录有变化时会自动更新。", acc=acc) if acc
+                                 else tr("Steam 自动同步：未开启。导入 Steam 时可以选择开启。"))
         connected = bool(self.ctx.sgdb_key())
         self.sgdb_state.setText(tr("已连接 SteamGridDB，可以在游戏详情页在线搜索封面。") if connected else
                                 tr("连接免费的 SteamGridDB 封面库后，可以在线搜索封面，并为新游戏自动配图。"))

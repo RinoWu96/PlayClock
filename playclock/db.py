@@ -21,11 +21,19 @@ CREATE TABLE IF NOT EXISTS meta (
     game  TEXT PRIMARY KEY,
     cover TEXT              -- file name inside data/covers
 );
+CREATE TABLE IF NOT EXISTS steam_names (
+    appid INTEGER PRIMARY KEY,
+    name  TEXT NOT NULL     -- looked up online for apps missing from Steam's local cache
+);
 CREATE TABLE IF NOT EXISTS aliases (
     raw  TEXT PRIMARY KEY,  -- name parsed from the window title
     name TEXT NOT NULL      -- name it is recorded as
 );
 """
+
+# Imported totals (Steam, Ryujinx) have no real dates: they count in totals and rankings ("all time")
+# but not in anything per day/week/month. Tracked and hand-entered time is dated.
+DATED = "(source IS NULL OR source='manual')"
 
 RENAMED_EMULATORS = {"yuzu 系": "yuzu & forks", "Citra 系 (3DS)": "Citra & forks"}
 RENAMED_GAMES = {"RetroArch（未识别游戏）": "RetroArch (unrecognized game)"}
@@ -108,9 +116,25 @@ class DB:
             self.con.execute("DELETE FROM sessions WHERE seconds<? AND source IS NULL", (min_seconds,))
 
     # --- imported history ----------------------------------------------------
-    def tracked_total(self, game: str) -> float:
-        return self.con.execute("SELECT COALESCE(SUM(seconds), 0) FROM sessions WHERE game=? AND source IS NULL",
-                                (game,)).fetchone()[0]
+    def tracked_total(self, game: str, emulator: str) -> float:
+        """Time PlayClock tracked itself for a game on one platform/emulator."""
+        return self.con.execute(
+            "SELECT COALESCE(SUM(seconds), 0) FROM sessions WHERE game=? AND emulator=? AND source IS NULL",
+            (game, emulator)).fetchone()[0]
+
+    def steam_names(self) -> dict[int, str]:
+        return {r[0]: r[1] for r in self.con.execute("SELECT appid, name FROM steam_names")}
+
+    def add_steam_name(self, appid: int, name: str) -> None:
+        with self.con:
+            self.con.execute("INSERT OR REPLACE INTO steam_names(appid, name) VALUES(?, ?)", (appid, name))
+
+    def add_manual(self, game: str, platform: str, seconds: float, end: float) -> None:
+        """Time entered by hand (e.g. played on a console)."""
+        with self.con:
+            self.con.execute(
+                "INSERT INTO sessions(game, emulator, start, end, seconds, source) VALUES(?,?,?,?,?,'manual')",
+                (game, platform, end - seconds, end, seconds))
 
     def imported_total(self, game: str, source: str) -> float:
         return self.con.execute("SELECT COALESCE(SUM(seconds), 0) FROM sessions WHERE game=? AND source=?",
@@ -129,30 +153,44 @@ class DB:
     # --- queries -----------------------------------------------------------
     def game_stats(self, since: float = 0) -> list[sqlite3.Row]:
         return self.con.execute(
-            """SELECT game,
+            f"""SELECT game,
                       GROUP_CONCAT(DISTINCT emulator) AS emulators,
                       SUM(seconds) AS total, COUNT(*) AS n, MAX(end) AS last
-               FROM sessions WHERE start>=? GROUP BY game ORDER BY total DESC""",
+               FROM sessions WHERE start>=? {"" if not since else "AND " + DATED}
+               GROUP BY game ORDER BY total DESC""",
             (since,)).fetchall()
 
     def game_detail(self, game: str) -> sqlite3.Row | None:
         return self.con.execute(
-            """SELECT game, GROUP_CONCAT(DISTINCT emulator) AS emulators, SUM(seconds) AS total,
-                      COUNT(*) AS n, MIN(start) AS first, MAX(end) AS last
+            f"""SELECT game, GROUP_CONCAT(DISTINCT emulator) AS emulators, SUM(seconds) AS total,
+                      COUNT(*) AS n, MIN(CASE WHEN {DATED} THEN start END) AS first, MAX(end) AS last
                FROM sessions WHERE game=?""", (game,)).fetchone()
 
     def total_since(self, since: float) -> float:
-        return self.con.execute("SELECT COALESCE(SUM(seconds), 0) FROM sessions WHERE start>=?", (since,)).fetchone()[0]
+        return self.con.execute(f"SELECT COALESCE(SUM(seconds), 0) FROM sessions WHERE start>=? AND {DATED}",
+                                (since,)).fetchone()[0]
+
+    def played_days(self, since: float = 0) -> int:
+        return self.con.execute(
+            f"SELECT COUNT(DISTINCT date(start, 'unixepoch', 'localtime')) FROM sessions WHERE start>=? AND {DATED}",
+            (since,)).fetchone()[0]
+
+    def has_imports(self) -> bool:
+        return self.con.execute(f"SELECT 1 FROM sessions WHERE NOT {DATED} LIMIT 1").fetchone() is not None
+
+    def first_dated(self) -> float | None:
+        return self.con.execute(f"SELECT MIN(start) FROM sessions WHERE {DATED}").fetchone()[0]
 
     def emulator_stats(self, since: float = 0) -> list[sqlite3.Row]:
         return self.con.execute(
-            """SELECT emulator, SUM(seconds) AS total FROM sessions WHERE start>=?
+            f"""SELECT emulator, SUM(seconds) AS total FROM sessions WHERE start>=? {"" if not since else "AND " + DATED}
                GROUP BY emulator ORDER BY total DESC""", (since,)).fetchall()
 
     def monthly(self, months: int = 12) -> list[tuple[str, float]]:
         """(YYYY-MM, seconds) for the last `months` months, oldest first, zero-filled."""
         got = {r[0]: r[1] for r in self.con.execute(
-            "SELECT strftime('%Y-%m', start, 'unixepoch', 'localtime') AS m, SUM(seconds) FROM sessions GROUP BY m")}
+            "SELECT strftime('%Y-%m', start, 'unixepoch', 'localtime') AS m, SUM(seconds) FROM sessions "
+            f"WHERE {DATED} GROUP BY m")}
         lt = time.localtime()
         y, m = lt.tm_year, lt.tm_mon
         out = []
@@ -169,6 +207,9 @@ class DB:
             q, a = "SELECT * FROM sessions ORDER BY start DESC LIMIT ?", (limit,)
         return self.con.execute(q, a).fetchall()
 
+    def emulators(self) -> list[str]:
+        return [r[0] for r in self.con.execute("SELECT DISTINCT emulator FROM sessions")]
+
     def games(self) -> list[str]:
         return [r[0] for r in self.con.execute("SELECT DISTINCT game FROM sessions ORDER BY game")]
 
@@ -177,7 +218,7 @@ class DB:
         lt = time.localtime()
         since = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday - days + 1, 0, 0, 0, 0, 0, -1))
         q = """SELECT date(start, 'unixepoch', 'localtime') AS d, SUM(seconds) AS s
-               FROM sessions WHERE start>=?""" + (" AND game=?" if game else "") + " GROUP BY d"
+               FROM sessions WHERE start>=? AND """ + DATED + (" AND game=?" if game else "") + " GROUP BY d"
         got = {r["d"]: r["s"] for r in self.con.execute(q, (since, game) if game else (since,))}
         out = []
         for i in range(days - 1, -1, -1):

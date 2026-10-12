@@ -82,3 +82,87 @@ def test_english_title_keeps_latin_tail():
     assert english_with_tail("The Legend of Zelda: Echoes of Wisdom", "薩爾達傳說 智慧的再現") == \
         "The Legend of Zelda: Echoes of Wisdom"
     assert english_with_tail("Octopath Traveler (video game)", "八方旅人") == "Octopath Traveler"
+
+
+def test_platforms_are_counted_separately(tmp_path):
+    from playclock.importers import EmuGame
+    db = DB(tmp_path / "t.db")
+    sid = db.start_session("OCTOPATH TRAVELER", "Ryujinx", 0)   # tracked on the Switch emulator
+    db.update_session(sid, 3600, 3600)
+    steam = [EmuGame("OCTOPATH TRAVELER", 7200, 10_000), EmuGame("OCTOPATH TRAVELER", 600, 20_000)]
+    plan = plan_import(db, steam, emulator="Steam")
+    assert [(r.game, r.emulator_total, r.tracked, r.add, r.last_played) for r in plan] == \
+        [("OCTOPATH TRAVELER", 7800, 0, 7800, 20_000)]
+    apply_import(db, plan, emulator="Steam", source="steam:1")
+    assert db.game_detail("OCTOPATH TRAVELER")["total"] == 3600 + 7800
+
+
+def test_steam_local_files(tmp_path):
+    import struct
+    from playclock.steam import SteamAccount, parse_vdf, playtimes, read_appinfo, scan_steam
+    cfg = tmp_path / "userdata" / "42" / "config" / "localconfig.vdf"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('''"UserLocalConfigStore"
+{
+    "friends" { "PersonaName" "Me" }
+    "Software" { "Valve" { "Steam" { "apps"
+    {
+        "10" { "LastPlayed" "1700000000" "Playtime" "90" "cloud" { "last_sync_state" "synchronized" } }
+        "20" { "Playtime" "30" }
+        "30" { "Playtime" "0" }
+        "40" { "Playtime" "15" }
+        "50" { "Playtime" "5" }
+    } } } }
+}''', encoding="utf-8")
+    assert parse_vdf('"a" { "B" "c" }') == {"a": {"b": "c"}}
+    assert playtimes(cfg) == {10: (5400.0, 1700000000.0), 20: (1800.0, None), 40: (900.0, None), 50: (300.0, None)}
+
+    # Minimal v29 appinfo.vdf: app 10 = game with a Chinese name, 20 = tool, 40/50 not cached.
+    strings = ["appinfo", "common", "name", "type", "name_localized", "schinese"]
+    idx = {s: i for i, s in enumerate(strings)}
+
+    def kv(d):
+        out = b""
+        for k, v in d.items():
+            if isinstance(v, dict):
+                out += b"\x00" + struct.pack("<I", idx[k]) + kv(v) + b"\x08"
+            else:
+                out += b"\x01" + struct.pack("<I", idx[k]) + v.encode() + b"\0"
+        return out
+
+    def app(appid, common):
+        body = kv({"appinfo": {"common": common}}) + b"\x08"
+        meta = struct.pack("<IIQ", 0, 0, 0) + b"\0" * 20 + struct.pack("<I", 0) + b"\0" * 20
+        return struct.pack("<II", appid, len(meta) + len(body)) + meta + body
+
+    apps = app(10, {"name": "Witcher", "type": "Game", "name_localized": {"schinese": "巫师"}}) + \
+        app(20, {"name": "Redist", "type": "Tool"})
+    head_len = 16
+    table_off = head_len + len(apps) + 4
+    table = struct.pack("<I", len(strings)) + b"".join(s.encode() + b"\0" for s in strings)
+    blob = struct.pack("<IIq", 0x07564429, 1, table_off) + apps + struct.pack("<I", 0) + table
+    (tmp_path / "appcache").mkdir()
+    (tmp_path / "appcache" / "appinfo.vdf").write_bytes(blob)
+    assert read_appinfo(tmp_path / "appcache" / "appinfo.vdf")[20] == ("Redist", "tool", {})
+
+    acc = SteamAccount("42", "Me", cfg)
+    games, unknown = scan_steam(tmp_path, acc, "zh", known_names={40: "Looked Up"})
+    assert [(g.title, g.seconds) for g in games] == [("巫师", 5400.0), ("Looked Up", 900.0)]
+    assert unknown == [50]
+    assert scan_steam(tmp_path, acc, "en")[0][0].title == "Witcher"
+
+
+def test_imports_count_in_totals_but_not_in_dated_stats(tmp_path):
+    import time as _t
+    from playclock.importers import EmuGame
+    db = DB(tmp_path / "t.db")
+    now = _t.time()
+    apply_import(db, plan_import(db, [EmuGame("Big Game", 1000 * 3600, now - 3600)], "Steam"), "Steam", "steam:1")
+    db.add_manual("Console Game", "PS5", 7200, now - 60)
+    assert {r["game"]: r["total"] for r in db.game_stats()} == {"Big Game": 3600000, "Console Game": 7200}
+    assert db.total_since(now - 86400) == 7200                  # today: hand-entered only
+    assert db.played_days() == 1
+    assert sum(s for _, s in db.daily(7)) == 7200 and sum(s for _, s in db.monthly(2)) == 7200
+    assert [r["game"] for r in db.game_stats(now - 86400)] == ["Console Game"]
+    assert db.game_detail("Big Game")["first"] is None and db.game_detail("Big Game")["last"] == now - 3600
+    assert db.has_imports()

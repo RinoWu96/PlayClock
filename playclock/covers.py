@@ -110,6 +110,19 @@ class SteamGridDB(QObject):
 
         self._get(f"https://{lang}.wikipedia.org/w/api.php?{q}", done, raw=True)
 
+    def steam_app_name(self, appid: int, lang: str, cb):
+        """Name of a Steam app from the public store API (no key). cb(str | None)"""
+        url = (f"https://store.steampowered.com/api/appdetails?appids={appid}&filters=basic"
+               f"&l={'schinese' if lang == 'zh' else 'english'}")
+
+        def done(data, _err):
+            try:
+                cb(json.loads(data)[str(appid)]["data"]["name"].strip() or None)
+            except (TypeError, ValueError, KeyError):
+                cb(None)
+
+        self._get(url, done, raw=True)
+
     def search_any(self, term: str, cb):
         """search(), trying the English title first for CJK names. cb(games, error, term_used)"""
         if not CJK.search(term):

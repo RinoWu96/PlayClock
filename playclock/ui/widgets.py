@@ -241,7 +241,7 @@ class GameCard(QFrame):
         self.setFixedSize(self.W, self.H + 74)
         self.setCursor(Qt.PointingHandCursor)
         self.pixmap = pixmap
-        self.emulator = emulator.split(",")[0]
+        self.emulator = emulator  # badge text (platforms)
         self.total = total
         self.last = last
         self.setToolTip(game)

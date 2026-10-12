@@ -1,8 +1,9 @@
-"""Import playtime history that emulators recorded themselves (currently Ryujinx).
+"""Import playtime history that emulators / launchers recorded themselves (Ryujinx, Steam).
 
 Import is idempotent and never double counts: for each game the imported amount is
-"emulator's total" minus "what PlayClock tracked itself", stored as one session tagged with `source`;
-re-importing replaces that session.
+"the platform's own total" minus "what PlayClock tracked itself on that platform", stored as one
+session tagged with `source`; re-importing replaces that session. Per platform, because the same
+game may be played on several (e.g. Ryujinx and Steam).
 """
 import json
 import os
@@ -21,6 +22,7 @@ class EmuGame:
     title: str
     seconds: float
     last_played: float | None  # epoch seconds
+    art: Path | str | None = None  # cover the platform already has: local file or image URL (Steam header)
 
 
 @dataclass
@@ -75,11 +77,16 @@ def scan_ryujinx(root: Path) -> list[EmuGame]:
     return out
 
 
-def plan_import(db: DB, games: list[EmuGame]) -> list[PlanRow]:
-    rows = []
+def plan_import(db: DB, games: list[EmuGame], emulator: str = "Ryujinx") -> list[PlanRow]:
+    merged: dict[str, EmuGame] = {}  # two entries can map to one name (aliases, test builds...)
     for g in games:
         name = db.resolve(g.title)
-        tracked = db.tracked_total(name)
+        m = merged.setdefault(name, EmuGame(name, 0.0, None))
+        m.seconds += g.seconds
+        m.last_played = max(filter(None, (m.last_played, g.last_played)), default=None)
+    rows = []
+    for name, g in merged.items():
+        tracked = db.tracked_total(name, emulator)
         rows.append(PlanRow(name, g.seconds, tracked, max(0.0, g.seconds - tracked), g.last_played))
     return rows
 

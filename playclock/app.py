@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 from . import __version__, i18n
 from .db import DB
 from .i18n import fmt_dur, tr
-from .rules import ensure_user_file, load_rules, write_builtin_reference
+from .rules import ensure_user_file, load_rules, platform_map, write_builtin_reference
 from .tracker import Tracker
 from .winapi import trim_memory
 from .ui import theme
@@ -109,6 +109,9 @@ class Controller(QObject):
         self.last_game = None
         self._sgdb = None
         self.cover_tried: set[str] = set()
+        self.ticks = 0
+        self.art_queue: list[tuple[str, str]] = []  # (game, image URL) waiting to be downloaded
+        self._art_busy = False
 
         self.tray = QSystemTrayIcon(QIcon(app_icon()), self)
         self.tray.activated.connect(
@@ -154,6 +157,81 @@ class Controller(QObject):
         if self.window:  # the UI reads the DB, so keep it current while visible
             self.tracker.flush()
             self.window.on_tick(changed)
+        self.ticks += 1
+        if self.ticks % 12 == 1:  # about once a minute: a stat() call unless Steam's file changed
+            self.sync_steam()
+
+    # --- platforms -------------------------------------------------------------
+    def platform_of(self, emulator: str) -> str:
+        """Ryujinx -> Switch, PCSX2 -> PS2; Steam and hand-entered platforms stay as they are."""
+        return platform_map(self.tracker.rules).get(emulator, emulator)
+
+    # --- Steam -------------------------------------------------------------
+    def steam_account(self):
+        """(root, account) chosen for automatic sync, or (None, None)."""
+        from .steam import accounts, steam_root
+        acc_id = self.cfg.get("steam_sync")
+        root = steam_root() if acc_id else None
+        acc = next((a for a in accounts(root) if a.account_id == acc_id), None) if root else None
+        return (root, acc) if acc else (None, None)
+
+    def sync_steam(self, force: bool = False):
+        """Re-import Steam playtime when Steam has rewritten its records (it does when you stop playing)."""
+        root, acc = self.steam_account()
+        if not acc:
+            return
+        mtime = acc.config.stat().st_mtime
+        if not force and mtime == self.cfg.get("steam_mtime"):
+            return
+        from .importers import apply_import, plan_import
+        from .steam import scan_steam
+        games, _unknown = scan_steam(root, acc, i18n.LANG, self.db.steam_names())
+        apply_import(self.db, plan_import(self.db, games, "Steam"), "Steam", f"steam:{acc.account_id}")
+        self.set_cfg("steam_mtime", mtime)
+        self.import_art(games)
+        self.changed()
+
+    def resolve_steam_names(self, appids: list[int], done):
+        """Look up names Steam's local cache lacks (public store API), one request at a time."""
+        todo = list(appids)
+
+        def next_one(name=None, appid=None):
+            if appid is not None and name:
+                self.db.add_steam_name(appid, name)
+            if not todo:
+                done()
+                return
+            a = todo.pop(0)
+            self.sgdb.steam_app_name(a, i18n.LANG, lambda n, a=a: next_one(n, a))
+
+        next_one()
+
+    def import_art(self, games):
+        """Use covers platforms already provide (Steam headers) for games that have none."""
+        for g in games:
+            name = self.db.resolve(g.title)
+            if not g.art or self.db.get_cover(name):
+                continue
+            if isinstance(g.art, Path):
+                self.save_cover(name, QImage(str(g.art)), refresh=False)
+            elif all(n != name for n, _ in self.art_queue):
+                self.art_queue.append((name, g.art))
+        self.changed()
+        self._next_art()
+
+    def _next_art(self):
+        if not self.art_queue or self._art_busy:
+            return
+        name, url = self.art_queue.pop(0)
+        self._art_busy = True
+
+        def got(data, _err):
+            self._art_busy = False
+            if data and not self.db.get_cover(name):
+                self.save_cover(name, QImage.fromData(data), refresh=not self.art_queue)
+            self._next_art()
+
+        self.sgdb.download(url, got)
 
     def changed(self):
         """Data changed outside the window (cover downloaded, import...)."""
@@ -172,7 +250,7 @@ class Controller(QObject):
         self._sgdb.key = self.sgdb_key()
         return self._sgdb
 
-    def save_cover(self, game: str, img: QImage) -> bool:
+    def save_cover(self, game: str, img: QImage, refresh: bool = True) -> bool:
         if img.isNull():
             return False
         if img.width() > 1280:
@@ -182,7 +260,8 @@ class Controller(QObject):
         img.save(str(COVERS / name))
         self.remove_cover_file(game)
         self.db.set_cover(game, name)
-        self.changed()
+        if refresh:
+            self.changed()
         return True
 
     def remove_cover_file(self, game: str):
@@ -288,7 +367,7 @@ class MainWindow(QMainWindow):
         self.app_title, self.version, self.data_dir = APP_TITLE, __version__, DATA
         self.prev_page = "home"
         self.setAttribute(Qt.WA_DeleteOnClose)
-        self.setWindowTitle(f"{APP_TITLE} · {tr('模拟器游戏时长记录')}")
+        self.setWindowTitle(f"{APP_TITLE} · {tr('游戏时长记录')}")
         self.setWindowIcon(QIcon(app_icon()))
         self.resize(1240, 820)
         self.setMinimumSize(1080, 680)
@@ -330,7 +409,7 @@ class MainWindow(QMainWindow):
         names = QVBoxLayout()
         names.setSpacing(0)
         names.addWidget(label(APP_TITLE, "brand"))
-        names.addWidget(label(tr("模拟器游戏时长记录"), "brandSub"))
+        names.addWidget(label(tr("游戏时长记录"), "brandSub"))
         brand.addLayout(names)
         brand.addStretch()
         v.addLayout(brand)
@@ -470,23 +549,72 @@ class MainWindow(QMainWindow):
         if dlg.exec() and dlg.image and not self.ctrl.save_cover(game, QImage.fromData(dlg.image)):
             QMessageBox.warning(self, APP_TITLE, tr("无法读取这张图片。"))
 
-    def open_import(self):
-        from .importers import apply_import, plan_import, ryujinx_roots, scan_ryujinx
+    def open_import(self, kind: str = "ryujinx"):
         from .ui.dialogs import ImportDialog
-        dlg = ImportDialog(self, self.db, ryujinx_roots(), scan_ryujinx, plan_import, apply_import)
-        if dlg.exec():
-            QMessageBox.information(self, APP_TITLE, tr("已导入 {n} 款游戏的游玩记录。", n=dlg.imported))
-            self.refresh_current()
+        if kind == "steam":
+            from .steam import accounts, scan_steam, steam_root
+            root = steam_root()
+            accs = accounts(root) if root else []
+            if not accs:
+                QMessageBox.information(self, APP_TITLE, tr("这台电脑上没有找到 Steam 的游玩记录。"))
+                return
+            current = self.cfg.get("steam_sync")
+            accs.sort(key=lambda a: a.account_id != current)
+            dlg = ImportDialog(
+                self, self.db, "Steam", [(f"{a.persona}  ({a.account_id})", a) for a in accs],
+                load=lambda a: scan_steam(root, a, i18n.LANG, self.db.steam_names()),
+                source=lambda a: f"steam:{a.account_id}", resolve=self.ctrl.resolve_steam_names,
+                sync_label=tr("以后自动同步这个账号的 Steam 时长"), sync_on=True)
+        else:
+            from .importers import RYUJINX, ryujinx_roots, scan_ryujinx
+            dlg = ImportDialog(self, self.db, "Ryujinx", [(str(r), r) for r in ryujinx_roots()],
+                               load=lambda root: (scan_ryujinx(root), []), source=lambda _r: RYUJINX,
+                               pick_folder=True)
+        if not dlg.exec():
+            return
+        if kind == "steam":
+            acc = dlg.value
+            synced = dlg.sync.isChecked()
+            self.set_cfg("steam_sync", acc.account_id if synced else "")
+            self.set_cfg("steam_mtime", acc.config.stat().st_mtime if synced else None)
+            self.ctrl.import_art(dlg.games)
+        QMessageBox.information(self, APP_TITLE, tr("已导入 {n} 款游戏的游玩记录。", n=dlg.imported))
+        self.refresh_current()
 
-    def ryujinx_pending(self) -> tuple[int, float]:
-        """(games, seconds) Ryujinx has recorded that PlayClock doesn't have yet."""
-        from .importers import RYUJINX, pending_seconds, plan_import, ryujinx_roots, scan_ryujinx
-        roots = ryujinx_roots()
-        if not roots:
-            return 0, 0.0
-        plan = plan_import(self.db, scan_ryujinx(roots[0]))
-        rows = [r for r in plan if r.add - self.db.imported_total(r.game, RYUJINX) >= 60]
-        return len(rows), pending_seconds(self.db, plan)
+    def import_suggestion(self) -> tuple[str, str] | None:
+        """(banner text, import kind) for history PlayClock could import, unless dismissed."""
+        if not self.cfg.get("ryujinx_banner_dismissed"):
+            from .importers import RYUJINX, pending_seconds, plan_import, ryujinx_roots, scan_ryujinx
+            roots = ryujinx_roots()
+            if roots:
+                plan = plan_import(self.db, scan_ryujinx(roots[0]))
+                n = sum(1 for r in plan if r.add - self.db.imported_total(r.game, RYUJINX) >= 60)
+                secs = pending_seconds(self.db, plan)
+                if n and secs >= 300:
+                    return tr("在 Ryujinx 里发现 {n} 款游戏共 {t} 的游玩记录，导入后统计会更完整。",
+                              n=n, t=fmt_dur(secs)), "ryujinx"
+        if not self.cfg.get("steam_banner_dismissed") and not self.cfg.get("steam_sync"):
+            from .steam import accounts, steam_root
+            root = steam_root()
+            if root and accounts(root):
+                return tr("检测到这台电脑上的 Steam，可以把 Steam 游戏的游玩时长一起导入。"), "steam"
+        return None
+
+    def platform_label(self, emulator: str) -> str:
+        """"Switch · Ryujinx" for emulators, just "Steam" / "PS5" otherwise."""
+        p = self.ctrl.platform_of(emulator)
+        return emulator if p == emulator else f"{p} · {emulator}"
+
+    def platform_of(self, emulator: str) -> str:
+        return self.ctrl.platform_of(emulator)
+
+    def add_time(self, game: str = "", platform: str = ""):
+        from .ui.dialogs import AddTimeDialog
+        known = sorted({self.platform_of(e) for e in self.db.emulators()} | {"Switch", "PS5", "PS4", "Xbox", "PC"})
+        dlg = AddTimeDialog(self, self.db.games(), known, game, platform)
+        if dlg.exec():
+            self.db.add_manual(dlg.game, dlg.platform, dlg.seconds, dlg.end)
+            self.refresh_current()
 
     def rename_game(self, game: str):
         dlg = QInputDialog(self)

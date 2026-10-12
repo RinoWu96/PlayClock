@@ -1,9 +1,11 @@
-"""Dialogs: SteamGridDB key guide, online cover search, emulator history import."""
-from PySide6.QtCore import QRectF, Qt, QUrl, Signal
+"""Dialogs: SteamGridDB key guide, online cover search, history import, manual time."""
+import time
+
+from PySide6.QtCore import QDate, QRectF, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QDialog, QFileDialog, QFrame, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QPushButton, QScrollArea,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QComboBox, QDateEdit, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLineEdit, QListWidget,
+    QListWidgetItem, QPushButton, QScrollArea, QSpinBox, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 from shiboken6 import isValid
 
@@ -295,44 +297,83 @@ class CoverSearchDialog(Dialog):
 
 
 class ImportDialog(Dialog):
-    """Preview and confirm importing an emulator's own playtime records."""
+    """Preview and confirm importing a platform's own playtime records (Ryujinx, Steam...).
 
-    def __init__(self, parent, db, roots, scan, plan_fn, apply_fn, emulator: str = "Ryujinx"):
+    choices      [(label, value)] — data folders or accounts to import from
+    load(value)  -> (games, unknown_ids); unknown ids are entries whose name must be looked up
+    source(value) -> source tag stored on imported sessions
+    resolve(ids, done) -> look names up (async), then call done(); optional
+    """
+
+    def __init__(self, parent, db, emulator: str, choices, load, source, resolve=None,
+                 pick_folder: bool = False, sync_label: str | None = None, sync_on: bool = False):
         super().__init__(parent, tr("导入 {emu} 的游玩记录", emu=emulator), 760)
-        self.resize(820, 600)
-        self.db, self.scan, self.plan_fn, self.apply_fn, self.emulator = db, scan, plan_fn, apply_fn, emulator
+        self.resize(860, 640)
+        self.db, self.emulator, self.load_fn, self.source_fn, self.resolve = db, emulator, load, source, resolve
         self.imported = 0
+        self.resolved = False   # names were looked up already
+        self.resolving = False  # lookup in progress
+        self.plan = []
         self.lay.addWidget(label(tr("导入 {emu} 的游玩记录", emu=emulator), "pageTitle"))
         self.lay.addWidget(label(tr("{emu} 自己也会记录每个游戏的累计时长。导入后，安装 PlayClock 之前玩的时间也能算进统计。"
                                     "只会补上 PlayClock 没记录到的部分，重复导入也不会重复计算。", emu=emulator),
                                  "muted", wrap=True))
         src = QHBoxLayout()
-        self.src_label = label("", "faint", wrap=True)
-        src.addWidget(self.src_label, 1)
-        src.addWidget(_button(tr("选择其他文件夹…"), slot=self.pick_folder))
+        self.choice = QComboBox()
+        self.choice.setMinimumHeight(36)
+        for text, value in choices:
+            self.choice.addItem(text, value)
+        self.choice.currentIndexChanged.connect(lambda _: self.load(self.choice.currentData()))
+        src.addWidget(self.choice, 1)
+        if pick_folder:
+            src.addWidget(_button(tr("选择其他文件夹…"), slot=self.pick_folder))
         self.lay.addLayout(src)
+        self.src_label = label("", "faint", wrap=True)
+        self.lay.addWidget(self.src_label)
         from .pages import make_table
         self.table = make_table([tr("游戏"), tr("{emu} 记录", emu=emulator), tr("PlayClock 已记录"), tr("将导入")])
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.lay.addWidget(self.table, 1)
+        self.sync = None
+        if sync_label:
+            from .widgets import Toggle
+            self.sync = Toggle(sync_label)
+            self.sync.setChecked(sync_on)
+            self.lay.addWidget(self.sync)
         self.go = _button(tr("导入"), "primary", self.do_import)
         self.footer(_button(tr("取消"), slot=self.reject), self.go)
-        self.load(roots[0] if roots else None)
+        if choices:
+            self.load(choices[0][1])
+        else:
+            self.choice.hide()
+            self.src_label.setText(tr("没有在默认位置找到 {emu} 的数据。如果你用的是便携版，请选择它的文件夹。",
+                                      emu=emulator))
+            self.go.setEnabled(False)
 
     def pick_folder(self):
         path = QFileDialog.getExistingDirectory(self, tr("选择 {emu} 数据文件夹", emu=self.emulator))
         if path:
             from pathlib import Path
-            self.load(Path(path))
+            self.choice.show()
+            self.choice.addItem(path, Path(path))
+            self.choice.setCurrentIndex(self.choice.count() - 1)
 
-    def load(self, root):
-        self.plan = []
-        if root is None:
-            self.src_label.setText(tr("没有在默认位置找到 {emu} 的数据。如果你用的是便携版，请选择它的文件夹。",
-                                      emu=self.emulator))
-        else:
-            self.plan = self.plan_fn(self.db, self.scan(root))
-            self.src_label.setText(tr("数据来源：{path}", path=root))
+    def load(self, value):
+        self.value = value
+        games, unknown = self.load_fn(value)
+        self.games = games
+        if unknown and self.resolve and not self.resolved:
+            self.resolved = self.resolving = True  # look names up once, then reload
+
+            def done():
+                if isValid(self):
+                    self.resolving = False
+                    self.load(self.value)
+
+            self.resolve(unknown, done)
+        from ..importers import plan_import
+        self.plan = sorted(plan_import(self.db, games, self.emulator), key=lambda r: -r.add)
+        self.src_label.setText(tr("数据来源：{path}", path=getattr(value, "config", value)))
         self.table.setRowCount(len(self.plan))
         right = Qt.AlignRight | Qt.AlignVCenter
         for i, r in enumerate(self.plan):
@@ -345,11 +386,79 @@ class ImportDialog(Dialog):
                     it.setForeground(QColor(theme.GREEN))
                 self.table.setItem(i, j, it)
         total = sum(r.add for r in self.plan)
-        self.go.setEnabled(total >= 60)
-        if root is not None:
-            self.set_status(tr("共 {n} 款游戏，将导入 {t}。", n=len(self.plan), t=fmt_dur(total)) if self.plan
-                            else tr("这个文件夹里没有找到游玩记录。"))
+        if self.resolving:
+            self.go.setEnabled(False)
+            self.set_status(tr("正在联网查询 {n} 个游戏的名字…", n=len(unknown)))
+        else:
+            self.go.setEnabled(total >= 60)
+            msg = (tr("共 {n} 款游戏，将导入 {t}。", n=len(self.plan), t=fmt_dur(total)) if self.plan
+                   else tr("这个文件夹里没有找到游玩记录。"))
+            if unknown:
+                msg += " " + tr("另有 {n} 个应用查不到名字，已跳过。", n=len(unknown))
+            self.set_status(msg)
 
     def do_import(self):
-        self.imported = self.apply_fn(self.db, self.plan)
+        from ..importers import apply_import
+        self.imported = apply_import(self.db, self.plan, self.emulator, self.source_fn(self.value))
+        self.accept()
+
+
+# --------------------------------------------------------------------------- manual time
+
+
+class AddTimeDialog(Dialog):
+    """Add playtime by hand — for consoles and anything PlayClock can't see."""
+
+    def __init__(self, parent, games: list[str], platforms: list[str], game: str = "", platform: str = ""):
+        super().__init__(parent, tr("添加游玩时长"), 520)
+        self.lay.addWidget(label(tr("添加游玩时长"), "pageTitle"))
+        self.lay.addWidget(label(tr("记录在主机或其他设备上玩的时间，比如 Switch、PS5。"
+                                    "时长可以对照主机「个人资料」或 PS App 里显示的数字填写。"), "muted", wrap=True))
+        form = QFormLayout()
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(12)
+        self.game_box = QComboBox()
+        self.game_box.setEditable(True)
+        self.game_box.addItems(games)
+        self.game_box.setCurrentText(game)
+        self.game_box.lineEdit().setPlaceholderText(tr("游戏名"))
+        self.platform_box = QComboBox()
+        self.platform_box.setEditable(True)
+        self.platform_box.addItems(platforms)
+        self.platform_box.setCurrentText(platform or "Switch")
+        dur = QHBoxLayout()
+        self.hours = QSpinBox()
+        self.hours.setRange(0, 99999)
+        self.hours.setSuffix(tr(" 小时"))
+        self.minutes = QSpinBox()
+        self.minutes.setRange(0, 59)
+        self.minutes.setSuffix(tr(" 分钟"))
+        for w in (self.hours, self.minutes):
+            w.setMinimumHeight(36)
+            dur.addWidget(w)
+        self.date = QDateEdit(QDate.currentDate())
+        self.date.setCalendarPopup(True)
+        self.date.setDisplayFormat("yyyy-MM-dd")
+        self.date.setMinimumHeight(36)
+        for w in (self.game_box, self.platform_box):
+            w.setMinimumHeight(36)
+        form.addRow(tr("游戏"), self.game_box)
+        form.addRow(tr("平台"), self.platform_box)
+        form.addRow(tr("时长"), dur)
+        form.addRow(tr("最后游玩日期"), self.date)
+        self.lay.addLayout(form)
+        self.ok = _button(tr("添加"), "primary", self.accept_input)
+        self.footer(_button(tr("取消"), slot=self.reject), self.ok)
+
+    def accept_input(self):
+        self.game = self.game_box.currentText().strip()
+        self.platform = self.platform_box.currentText().strip()
+        self.seconds = self.hours.value() * 3600 + self.minutes.value() * 60
+        if not self.game or not self.platform or not self.seconds:
+            self.set_status(tr("请填写游戏名、平台和时长。"), True)
+            return
+        d = self.date.date()
+        today = d == QDate.currentDate()
+        # end of that day (or now for today), so the time lands on the chosen date
+        self.end = time.time() if today else time.mktime((d.year(), d.month(), d.day(), 22, 0, 0, 0, 0, -1))
         self.accept()
