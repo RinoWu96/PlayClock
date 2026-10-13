@@ -70,10 +70,27 @@ def _exe_path(pid: int) -> str:
         kernel32.CloseHandle(h)
 
 
+_last_fg = 0  # the last foreground window that wasn't one of PlayClock's own
+
+
+def _foreground(own_pid: int) -> int:
+    """The foreground window, except that looking at PlayClock (main window, floating panel, dialogs)
+    doesn't count as leaving the game: then the previous foreground window is kept."""
+    global _last_fg
+    fg = int(user32.GetForegroundWindow() or 0)
+    if fg:
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(fg, ctypes.byref(pid))
+        if pid.value == own_pid:
+            return _last_fg
+    _last_fg = fg
+    return fg
+
+
 def list_windows() -> list[Window]:
     """Visible, un-owned, titled top-level windows of other processes."""
     own_pid = os.getpid()
-    fg = user32.GetForegroundWindow() or 0
+    fg = _foreground(own_pid)
     out: list[Window] = []
 
     def cb(hwnd, _lparam):
@@ -110,3 +127,28 @@ def list_windows() -> list[Window]:
 def trim_memory() -> None:
     """Let Windows page out memory this process isn't using (after the window closes / at startup)."""
     kernel32.SetProcessWorkingSetSize(kernel32.GetCurrentProcess(), ctypes.c_size_t(-1), ctypes.c_size_t(-1))
+
+
+# --- global hotkey (Ctrl+Alt+P toggles the floating panel, also from inside a game) ---
+MOD_ALT, MOD_CONTROL, MOD_NOREPEAT = 0x0001, 0x0002, 0x4000
+WM_HOTKEY = 0x0312
+user32.RegisterHotKey.argtypes = [wt.HWND, ctypes.c_int, wt.UINT, wt.UINT]
+user32.RegisterHotKey.restype = wt.BOOL
+user32.UnregisterHotKey.argtypes = [wt.HWND, ctypes.c_int]
+user32.UnregisterHotKey.restype = wt.BOOL
+
+
+def register_hotkey(hotkey_id: int, key: str = "P") -> bool:
+    """Ctrl+Alt+<key> for this thread; False when another program already owns it."""
+    return bool(user32.RegisterHotKey(None, hotkey_id, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, ord(key)))
+
+
+def unregister_hotkey(hotkey_id: int) -> None:
+    user32.UnregisterHotKey(None, hotkey_id)
+
+
+def hotkey_id_of(message) -> int | None:
+    """The hotkey id if a native Windows message (from Qt's native event filter) is WM_HOTKEY."""
+    msg = wt.MSG.from_address(int(message))
+    return int(msg.wParam) if msg.message == WM_HOTKEY else None
+

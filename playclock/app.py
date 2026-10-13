@@ -10,7 +10,7 @@ import uuid
 import winreg
 from pathlib import Path
 
-from PySide6.QtCore import QLibraryInfo, QObject, QPoint, QSize, Qt, QTimer, QTranslator, Signal
+from PySide6.QtCore import QAbstractNativeEventFilter, QLibraryInfo, QObject, QPoint, QSize, Qt, QTimer, QTranslator, Signal
 from PySide6.QtGui import QIcon, QImage
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (
@@ -99,6 +99,24 @@ def apply_language(app: QApplication, lang: str) -> None:
 
 # --------------------------------------------------------------------------- background
 
+HOTKEY_ID = 0x5C10  # Ctrl+Alt+P
+
+
+class HotkeyFilter(QAbstractNativeEventFilter):
+    """Delivers WM_HOTKEY (registered for the GUI thread, no window) to a callback."""
+
+    def __init__(self, callback):
+        super().__init__()
+        self.callback = callback
+
+    def nativeEventFilter(self, event_type, message):
+        if event_type == b"windows_generic_MSG":
+            from .winapi import hotkey_id_of
+            if hotkey_id_of(message) == HOTKEY_ID:
+                self.callback()
+                return True, 0
+        return False, 0
+
 
 class _Bridge(QObject):
     done = Signal(object, object)  # result, error
@@ -138,6 +156,8 @@ class Controller(QObject):
         self._sgdb = None
         self.cover_tried: set[str] = set()
         self.ticks = 0
+        self.overlay = None  # floating panel, only exists while shown
+        self.hotkey_ok = False
         self.art_queue: list[tuple[str, str]] = []  # (game, image URL) waiting to be downloaded
         self._art_busy = False
 
@@ -162,6 +182,9 @@ class Controller(QObject):
     def build_tray_menu(self):
         self.menu = QMenu()
         self.menu.addAction(tr("打开主界面"), self.show_window)
+        self.overlay_action = self.menu.addAction(tr("游戏浮窗") + "\tCtrl+Alt+P", self.toggle_overlay)
+        self.overlay_action.setCheckable(True)
+        self.overlay_action.setChecked(self.overlay is not None)
         self.menu.addSeparator()
         self.menu.addAction(tr("退出"), self.quit)
         self.tray.setContextMenu(self.menu)
@@ -192,6 +215,8 @@ class Controller(QObject):
         if self.window:  # the UI reads the DB, so keep it current while visible
             self.tracker.flush()
             self.window.on_tick(changed)
+        if self.overlay:
+            self.overlay.update()
         self.ticks += 1
         if self.ticks % 12 == 1:  # about once a minute: a stat() call unless Steam's file changed
             self.sync_steam()
@@ -431,6 +456,79 @@ class Controller(QObject):
             self.cfg.pop(k, None)
         save_config(self.cfg)
 
+    # --- floating panel -------------------------------------------------------
+    def cover(self, game: str):
+        from .ui.widgets import cover_pixmap
+        name = self.db.get_cover(game)
+        return cover_pixmap(COVERS / name) if name else None
+
+    def set_overlay(self, on: bool, save: bool = True):
+        if on and self.overlay is None:
+            from .ui.overlay import Overlay
+            self.overlay = Overlay(self)
+            self.overlay.destroyed.connect(lambda: setattr(self, "overlay", None))
+            self.overlay.show()
+        elif not on and self.overlay is not None:
+            self.overlay.close()  # WA_DeleteOnClose: gone, nothing left running
+            self.overlay = None
+            QTimer.singleShot(500, self.release_memory)
+        self.overlay_action.setChecked(on)
+        if save:
+            self.set_cfg("overlay", on)
+        if self.window:
+            self.window.refresh_overlay_state()
+
+    def toggle_overlay(self):
+        self.set_overlay(self.overlay is None)
+
+    # --- PC games added by hand (pc.py); used by the main window and the floating panel ---
+    def add_pc_game(self, parent, path: str = "") -> bool:
+        from .pc import is_steam_game, lookup, norm, suggest_name
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(parent, tr("选择游戏的 exe"), "", tr("程序 (*.exe)"))
+            if not path:
+                return False
+        path = os.path.normpath(path)
+        if is_steam_game(path):
+            QMessageBox.information(parent, APP_TITLE, tr("这是 Steam 游戏：它的时长由「从 Steam 导入」获取，"
+                                                          "在这里再添加会重复计算。"))
+            return False
+        games = self.cfg.get("pc_games", [])
+        if norm(path) in lookup(games):
+            QMessageBox.information(parent, APP_TITLE,
+                                    tr("这个程序已经添加过了：「{game}」。", game=lookup(games)[norm(path)]))
+            return False
+        dlg = QInputDialog(parent)
+        dlg.setWindowTitle(tr("添加 PC 游戏"))
+        dlg.setLabelText(tr("游戏名称：\n{path}\n可以选已有的游戏，时长会记在一起。", path=path))
+        dlg.setComboBoxItems(self.db.games())
+        dlg.setComboBoxEditable(True)
+        dlg.setTextValue(suggest_name(path))
+        dlg.resize(520, 160)
+        if not dlg.exec() or not dlg.textValue().strip():
+            return False
+        self.set_cfg("pc_games", games + [{"path": path, "name": dlg.textValue().strip()}])
+        QTimer.singleShot(0, self.on_tick)  # start counting right away, not at the next poll
+        return True
+
+    def add_running_pc_game(self, parent) -> bool:
+        """Pick one of the programs that have a window open right now (start the game first)."""
+        from .pc import is_steam_game, lookup, norm
+        from .winapi import list_windows
+        added = lookup(self.cfg.get("pc_games"))
+        emulators = {w.pid for _, w in self.tracker.seen}
+        choices: dict[str, str] = {}
+        for w in sorted(list_windows(), key=lambda w: w.area, reverse=True):
+            if (w.path and w.pid not in emulators and norm(w.path) not in added and not is_steam_game(w.path)
+                    and w.path not in choices.values()):
+                choices[f"{w.title}  —  {w.exe}"] = w.path
+        if not choices:
+            QMessageBox.information(parent, APP_TITLE, tr("没有找到可以添加的程序。请先启动游戏，再回来点这个按钮。"))
+            return False
+        item, ok = QInputDialog.getItem(parent, tr("添加 PC 游戏"), tr("选择正在运行的游戏（先启动游戏再来选）："),
+                                        list(choices), 0, False)
+        return bool(ok) and self.add_pc_game(parent, choices[item])
+
     def show_window(self, page: str = "home", geometry=None):
         if self.window is None:
             self.window = MainWindow(self)
@@ -454,7 +552,7 @@ class Controller(QObject):
             self.set_cfg("tray_hint_shown", True)
 
     def release_memory(self):
-        if self.window is None:
+        if self.window is None and self.overlay is None:
             gc.collect()
             trim_memory()
 
@@ -472,6 +570,8 @@ class Controller(QObject):
             QTimer.singleShot(0, lambda: self.show_window("settings", geo))
 
     def quit(self):
+        from .winapi import unregister_hotkey
+        unregister_hotkey(HOTKEY_ID)
         self.timer.stop()
         self.tracker.stop()
         self.tray.hide()
@@ -763,51 +863,21 @@ class MainWindow(QMainWindow):
             self.refresh_current()
 
     # --- PC games added by hand (pc.py) --------------------------------------
+    def set_overlay(self, on: bool):
+        self.ctrl.set_overlay(on)
+
+    def refresh_overlay_state(self):
+        page = self.pages["settings"]
+        if self.current_page() is page:
+            page.refresh_overlay()
+
     def add_pc_game(self, path: str = ""):
-        from .pc import is_steam_game, lookup, norm, suggest_name
-        if not path:
-            path, _ = QFileDialog.getOpenFileName(self, tr("选择游戏的 exe"), "", tr("程序 (*.exe)"))
-            if not path:
-                return
-        path = os.path.normpath(path)
-        if is_steam_game(path):
-            QMessageBox.information(self, APP_TITLE, tr("这是 Steam 游戏：它的时长由「从 Steam 导入」获取，"
-                                                        "在这里再添加会重复计算。"))
-            return
-        games = self.cfg.get("pc_games", [])
-        if norm(path) in lookup(games):
-            QMessageBox.information(self, APP_TITLE, tr("这个程序已经添加过了：「{game}」。", game=lookup(games)[norm(path)]))
-            return
-        dlg = QInputDialog(self)
-        dlg.setWindowTitle(tr("添加 PC 游戏"))
-        dlg.setLabelText(tr("游戏名称：\n{path}\n可以选已有的游戏，时长会记在一起。", path=path))
-        dlg.setComboBoxItems(self.db.games())
-        dlg.setComboBoxEditable(True)
-        dlg.setTextValue(suggest_name(path))
-        dlg.resize(520, 160)
-        if not dlg.exec() or not dlg.textValue().strip():
-            return
-        self.ctrl.set_cfg("pc_games", games + [{"path": path, "name": dlg.textValue().strip()}])
-        self.refresh_current()
+        if self.ctrl.add_pc_game(self, path):
+            self.refresh_current()
 
     def add_running_pc_game(self):
-        """Pick one of the programs that have a window open right now (start the game first)."""
-        from .pc import is_steam_game, lookup, norm
-        from .winapi import list_windows
-        added = lookup(self.cfg.get("pc_games"))
-        emulators = {w.pid for _, w in self.tracker.seen}
-        choices: dict[str, str] = {}
-        for w in sorted(list_windows(), key=lambda w: w.area, reverse=True):
-            if (w.path and w.pid not in emulators and norm(w.path) not in added and not is_steam_game(w.path)
-                    and w.path not in choices.values()):
-                choices[f"{w.title}  —  {w.exe}"] = w.path
-        if not choices:
-            QMessageBox.information(self, APP_TITLE, tr("没有找到可以添加的程序。请先启动游戏，再回来点这个按钮。"))
-            return
-        item, ok = QInputDialog.getItem(self, tr("添加 PC 游戏"), tr("选择正在运行的游戏（先启动游戏再来选）："),
-                                        list(choices), 0, False)
-        if ok:
-            self.add_pc_game(choices[item])
+        if self.ctrl.add_running_pc_game(self):
+            self.refresh_current()
 
     def remove_pc_game(self, path: str):
         from .pc import norm
@@ -969,6 +1039,13 @@ def main():
     # Shutdown / logoff usually ends a tray app without a normal quit: write the running session first.
     app.commitDataRequest.connect(lambda _m: ctrl.tracker.flush())
     app.aboutToQuit.connect(ctrl.tracker.stop)
+    from .winapi import register_hotkey
+    hotkeys = HotkeyFilter(ctrl.toggle_overlay)
+    app.installNativeEventFilter(hotkeys)
+    app._hotkeys = hotkeys  # keep the filter alive
+    ctrl.hotkey_ok = register_hotkey(HOTKEY_ID)
+    if cfg.get("overlay"):
+        ctrl.set_overlay(True, save=False)
     server.newConnection.connect(lambda: (server.nextPendingConnection(), ctrl.show_window()))
     if "--minimized" not in sys.argv:
         ctrl.show_window()

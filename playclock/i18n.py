@@ -419,4 +419,21 @@ EN = {
     "从 Steam 等平台导入的历史时长没有具体日期，只计入总时长和排行，不计入趋势、日均和游玩天数。":
         "Imported history (from Steam and others) has no dates, so it counts toward totals and rankings "
         "but not the trend chart, daily average or days played.",
+    # floating panel
+    "游戏浮窗": "Game overlay",
+    "游戏浮窗：置顶显示正在记录的游戏和计时": "Game overlay: keep the game being recorded and its timer on top",
+    "Ctrl+Alt+P 随时显示 / 隐藏，游戏里也能用；浮窗可以拖动。独占全屏的游戏会挡住浮窗，请把游戏设成无边框窗口。":
+        "Ctrl+Alt+P shows or hides it at any time, even in a game; drag it anywhere. Exclusive-fullscreen games "
+        "cover it, so set the game to borderless windowed.",
+    "快捷键 Ctrl+Alt+P 被其他程序占用了，请用托盘菜单或这里的开关显示浮窗。":
+        "Another program already uses Ctrl+Alt+P. Use the tray menu or this switch to show the overlay.",
+    "选择正在运行的游戏": "Pick a running game",
+    "隐藏浮窗（Ctrl+Alt+P）": "Hide overlay (Ctrl+Alt+P)",
+    "记录中": "Recording",
+    "游戏已暂停，不计时": "Game paused, not counting",
+    "游戏不在前台，暂停计时": "Game not in front, not counting",
+    "未识别到游戏": "No game detected",
+    "点 + 从正在运行的程序里选择": "Press + to pick from running programs",
+    "PlayClock 认不出的游戏，选一次之后就会自动计时。": "For games PlayClock can't recognise: pick it once and it's timed automatically from then on.",
+    "今天 {t}": "Today {t}",
 }

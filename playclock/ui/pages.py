@@ -662,6 +662,11 @@ class SettingsPage(Page):
         self.autostart.setChecked(ctx.get_autostart())
         self.autostart.toggled.connect(ctx.set_autostart)
         general.lay.addWidget(self.autostart)
+        self.overlay = Toggle(tr("游戏浮窗：置顶显示正在记录的游戏和计时"))
+        self.overlay.toggled.connect(lambda v: ctx.set_overlay(v))
+        general.lay.addWidget(self.overlay)
+        self.overlay_hint = label("", "faint", wrap=True)
+        general.lay.addWidget(self.overlay_hint)
         self.fg = Toggle(tr("只在模拟器窗口位于前台时计时"))
         self.fg.setChecked(bool(cfg["foreground_only"]))
         self.fg.toggled.connect(lambda v: ctx.set_cfg("foreground_only", v))
@@ -828,6 +833,7 @@ class SettingsPage(Page):
                                  + tr("\n内置规则随软件版本更新；自己添加或修改的规则保存在 rules.user.json，更新时不会被覆盖。"))
         self.data_label.setText(tr("所有记录都只保存在本机：{path}", path=self.ctx.data_dir))
         self.refresh_sync()
+        self.refresh_overlay()
         self.refresh_pc_games()
         acc = self.ctx.cfg.get("steam_sync")
         self.steam_state.setText(tr("Steam 自动同步：已开启（账号 {acc}），Steam 记录有变化时会自动更新。", acc=acc) if acc
@@ -844,6 +850,15 @@ class SettingsPage(Page):
         self.about.setText(f"{self.ctx.app_title} v{self.ctx.version}\n"
                            + tr("通过读取模拟器窗口标题识别正在运行的游戏，不读取、不修改任何游戏文件。只有使用 SteamGridDB 封面功能时才会联网。"))
         self.on_tick()
+
+    def refresh_overlay(self):
+        self.overlay.blockSignals(True)
+        self.overlay.setChecked(self.ctx.ctrl.overlay is not None)
+        self.overlay.blockSignals(False)
+        self.overlay_hint.setText(
+            tr("Ctrl+Alt+P 随时显示 / 隐藏，游戏里也能用；浮窗可以拖动。独占全屏的游戏会挡住浮窗，请把游戏设成无边框窗口。")
+            if self.ctx.ctrl.hotkey_ok else
+            tr("快捷键 Ctrl+Alt+P 被其他程序占用了，请用托盘菜单或这里的开关显示浮窗。"))
 
     def refresh_sync(self):
         cfg = self.ctx.cfg
