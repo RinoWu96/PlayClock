@@ -1,0 +1,10 @@
+.gap { margin: 10rpx 0 24rpx; line-height: 1.6; }
+.label { color: var(--muted); font-size: 24rpx; margin: 18rpx 0 10rpx; }
+.field {
+  background: var(--bg); border: 1rpx solid var(--border); border-radius: 14rpx;
+  height: 80rpx; padding: 0 22rpx; color: var(--text);
+}
+.ph { color: var(--faint); }
+.save { margin-top: 36rpx; }
+.status { margin: 0 6rpx 24rpx; font-size: 26rpx; }
+.err { color: var(--danger); }

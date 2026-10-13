@@ -1,0 +1,15 @@
+{
+  "description": "PlayClock 小程序：在手机上查看游戏时长（只读，数据来自你自己的坚果云）",
+  "appid": "touristappid",
+  "projectname": "PlayClock",
+  "compileType": "miniprogram",
+  "libVersion": "3.5.8",
+  "setting": {
+    "urlCheck": true,
+    "es6": true,
+    "enhance": true,
+    "postcss": true,
+    "minified": true
+  },
+  "condition": {}
+}

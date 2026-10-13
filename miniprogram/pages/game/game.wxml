@@ -1,0 +1,34 @@
+<view class="page">
+  <view wx:if="{{!found}}" class="empty">没有找到「{{name}}」的记录</view>
+  <block wx:else>
+    <view class="hero card">
+      <view class="cover" style="{{avatar.style}}">{{avatar.initials}}</view>
+      <view class="muted plats">
+        <text wx:if="{{playing}}" class="live">● 正在游玩 · 本次 {{playing}}　</text>{{platforms}}
+      </view>
+      <view class="title">{{name}}</view>
+      <view class="total">{{total}}</view>
+      <view class="faint">总游玩时长</view>
+    </view>
+
+    <view class="stats">
+      <view wx:for="{{stats}}" wx:key="label" class="card stat">
+        <view class="faint">{{item.label}}</view>
+        <view class="stat-value">{{item.value}}</view>
+        <view wx:if="{{item.sub}}" class="faint">{{item.sub}}</view>
+      </view>
+    </view>
+
+    <view class="section">最近记录</view>
+    <view class="card list">
+      <view wx:for="{{sessions}}" wx:key="key" class="spread item">
+        <view>
+          <view>{{item.when}}</view>
+          <view class="faint">{{item.platform}}</view>
+        </view>
+        <view class="muted">{{item.dur}}</view>
+      </view>
+      <view wx:if="{{!sessions.length}}" class="faint">最近没有 PlayClock 记录的游玩（导入的历史时长没有逐次记录）。</view>
+    </view>
+  </block>
+</view>

@@ -148,3 +148,34 @@ def test_two_devices_sync_through_webdav(tmp_path, dav_server):
 
     with pytest.raises(SyncError, match="auth"):
         WebDAV(dav_server, "me@example.com", "wrong").check()
+
+
+def test_summary_for_viewers(tmp_path):
+    import json
+    import time
+    from playclock.summary import build_summary, content_hash, encode_summary
+    db = DB(tmp_path / "a.db", device="PC")
+    now = time.time()
+    sid = db.start_session("Zelda", "Ryujinx", now - 1800)       # playing right now
+    db.update_session(sid, now - 30, 1770)
+    old = db.start_session("Mario", "Ryujinx", now - 90000)       # yesterday
+    db.update_session(old, now - 86400, 3600)
+    apply_import(db, plan_import(db, [EmuGame("Warframe", 360000, now - 10 ** 6)], "Steam"), "Steam", "steam:1")
+    platform_of = {"Ryujinx": "Switch"}.get
+    s = build_summary(db, lambda e: platform_of(e, e), {"PC": "Desk"}, now)
+    assert [(p["game"], p["platform"], p["device"]) for p in s["playing"]] == [("Zelda", "Switch", "Desk")]
+    assert s["total"] == 1770 + 3600 + 360000
+    assert {g["name"]: g["platforms"] for g in s["games"]} == {"Warframe": ["Steam"], "Mario": ["Switch"], "Zelda": ["Switch"]}
+    assert sum(d[1] for d in s["daily"]) == 1770 + 3600            # imported totals have no dates
+    assert [r["game"] for r in s["recent"]] == ["Zelda", "Mario"]
+    assert s["platforms"][0][0] == "Steam" and s["has_imports"]
+    assert json.loads(encode_summary(s)) == s
+    later = dict(s, generated=now + 60)
+    assert content_hash(later) == content_hash(s)                  # timestamp alone doesn't trigger an upload
+
+
+def test_summary_is_uploaded_next_to_device_files(tmp_path, dav_server):
+    client = WebDAV(dav_server, "me@example.com", "app-pass")
+    run_sync(client, "PC", b"x", {}, extra={"summary.json": b'{"format":1}'})
+    assert client.get("PlayClock/summary.json") == b'{"format":1}'
+    assert set(client.listing("PlayClock/devices")) == {"PC.json.gz"}   # summary is not mistaken for a device

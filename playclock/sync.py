@@ -161,13 +161,17 @@ class WebDAV:
             raise SyncError(f"PUT {path}: HTTP {status}")
 
 
-def run_sync(client: WebDAV, device: str, upload: bytes | None, known: dict[str, str]):
-    """One round of network work (worker thread). Returns (downloaded blobs by name, new version tags)."""
+def run_sync(client: WebDAV, device: str, upload: bytes | None, known: dict[str, str],
+             extra: dict[str, bytes] | None = None):
+    """One round of network work (worker thread). Returns (downloaded blobs by name, new version tags).
+    `extra` = other files to write in the PlayClock folder (summary.json for the mini program)."""
     client.ensure_dir(FOLDER)
     client.ensure_dir(f"{FOLDER}/devices")
     own = f"{device}.json.gz"
     if upload is not None:
         client.put(f"{FOLDER}/devices/{own}", upload)
+    for name, data in (extra or {}).items():
+        client.put(f"{FOLDER}/{name}", data)
     tags = client.listing(f"{FOLDER}/devices")
     blobs = {name: client.get(f"{FOLDER}/devices/{name}")
              for name, tag in tags.items() if name != own and name.endswith(".json.gz") and known.get(name) != tag}

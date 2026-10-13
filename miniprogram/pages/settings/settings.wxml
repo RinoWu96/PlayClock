@@ -1,0 +1,27 @@
+<view class="page">
+  <view class="section">坚果云</view>
+
+  <view wx:if="{{connected}}" class="card">
+    <view>已连接：{{user}}</view>
+    <view class="faint gap">数据来自电脑上的 PlayClock 同步到坚果云的汇总文件，打开概览页时每分钟自动刷新。</view>
+    <button class="btn-ghost" bindtap="logout">断开</button>
+  </view>
+
+  <view wx:else class="card">
+    <view class="faint gap">填写电脑上 PlayClock 用的同一个坚果云账号。可以单独为小程序生成一个应用密码，方便随时撤销。</view>
+    <view class="label">账号（登录邮箱或手机号）</view>
+    <input class="field" value="{{user}}" data-field="user" bindinput="input" placeholder="you@example.com" placeholder-class="ph" />
+    <view class="label">应用密码（不是登录密码）</view>
+    <input class="field" password value="{{pass}}" data-field="pass" bindinput="input" placeholder="应用密码" placeholder-class="ph" />
+    <view class="label">服务器</view>
+    <input class="field" value="{{url}}" data-field="url" bindinput="input" placeholder-class="ph" />
+    <button class="btn save" loading="{{busy}}" disabled="{{busy}}" bindtap="save">连接</button>
+  </view>
+  <view wx:if="{{status}}" class="{{error ? 'err' : 'muted'}} status">{{status}}</view>
+
+  <view class="section">关于</view>
+  <view class="card faint">
+    PlayClock 小程序只读取你坚果云里 PlayClock 文件夹中的汇总文件，不修改任何数据。
+    账号和应用密码只保存在这台手机的微信里。
+  </view>
+</view>

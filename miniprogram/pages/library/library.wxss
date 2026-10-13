@@ -1,0 +1,18 @@
+.search {
+  background: var(--card); border: 1rpx solid var(--border); border-radius: 18rpx;
+  height: 76rpx; padding: 0 24rpx; margin-bottom: 20rpx; color: var(--text);
+}
+.ph { color: var(--faint); }
+.chips { white-space: nowrap; display: flex; margin-bottom: 12rpx; }
+.chip {
+  display: inline-block; padding: 12rpx 24rpx; margin-right: 14rpx; border-radius: 999rpx;
+  background: var(--card); border: 1rpx solid var(--border); color: var(--muted); font-size: 26rpx;
+}
+.chip.on { background: var(--card-hover); color: var(--text); border-color: var(--accent); font-weight: 600; }
+.subtitle { margin: 6rpx 4rpx 18rpx; }
+.list { padding: 8rpx 28rpx; }
+.item { padding: 20rpx 0; border-bottom: 1rpx solid var(--border); }
+.item:last-child { border-bottom: none; }
+.name { font-size: 30rpx; font-weight: 600; margin-bottom: 6rpx; }
+.total { color: var(--text); font-size: 28rpx; margin-left: 16rpx; white-space: nowrap; }
+.setup-btn { margin-top: 40rpx; width: 300rpx; }

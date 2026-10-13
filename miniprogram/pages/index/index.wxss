@@ -1,0 +1,40 @@
+.head { margin: 8rpx 4rpx 24rpx; }
+.greet { font-size: 44rpx; font-weight: 700; }
+.warn { color: var(--danger); font-size: 24rpx; margin: -8rpx 4rpx 20rpx; }
+.title { font-size: 40rpx; font-weight: 700; color: var(--text); margin-bottom: 20rpx; }
+.setup-btn { margin-top: 48rpx; width: 360rpx; }
+
+.playing { background: linear-gradient(135deg, #1f4d3c, #191d25 70%); border-color: #2e6b52; }
+.playing.stale { background: var(--card); border-color: var(--border); }
+.live { color: var(--green); font-size: 24rpx; font-weight: 600; }
+.stale .live { color: var(--muted); }
+.dot {
+  display: inline-block; width: 14rpx; height: 14rpx; border-radius: 50%; background: currentColor;
+  margin-right: 10rpx; vertical-align: middle;
+}
+.game-name { font-size: 34rpx; font-weight: 700; margin: 6rpx 0; }
+.clock { font-size: 40rpx; font-weight: 600; font-variant-numeric: tabular-nums; margin-left: 16rpx; }
+.idle-title { font-size: 32rpx; font-weight: 600; margin-bottom: 8rpx; }
+
+.tiles { display: flex; flex-wrap: wrap; justify-content: space-between; }
+.tile { width: 47%; box-sizing: border-box; position: relative; padding-bottom: 36rpx; }
+.tile-label { font-size: 24rpx; }
+.tile-value { font-size: 38rpx; font-weight: 700; margin-top: 6rpx; }
+.tile-bar { position: absolute; left: 28rpx; bottom: 16rpx; width: 48rpx; height: 6rpx; border-radius: 3rpx; }
+
+.chart { display: flex; height: 260rpx; align-items: flex-end; margin-top: 8rpx; }
+.col { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; }
+.bar-wrap { flex: 1; width: 100%; display: flex; align-items: flex-end; justify-content: center; }
+.bar { width: 60%; min-height: 2rpx; border-radius: 8rpx 8rpx 0 0; background: linear-gradient(#8aa3ff, #5a74e0); }
+.bar-label { height: 36rpx; font-size: 20rpx; color: var(--faint); margin-top: 6rpx; white-space: nowrap; }
+.note { margin-top: 12rpx; }
+
+.list { padding: 8rpx 28rpx; }
+.item { padding: 18rpx 0; border-bottom: 1rpx solid var(--border); }
+.item:last-child { border-bottom: none; }
+.avatar.small { width: 72rpx; height: 72rpx; font-size: 26rpx; border-radius: 16rpx; }
+
+.plat { margin-bottom: 22rpx; }
+.plat:last-child { margin-bottom: 0; }
+.track { height: 14rpx; border-radius: 7rpx; background: rgba(255, 255, 255, 0.06); margin-top: 10rpx; }
+.fill { height: 14rpx; border-radius: 7rpx; }

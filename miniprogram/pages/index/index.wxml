@@ -1,0 +1,88 @@
+<view class="page">
+  <view wx:if="{{state === 'setup'}}" class="empty">
+    <view class="title">欢迎使用 PlayClock</view>
+    <view class="muted">连接你的坚果云后，就能在手机上查看电脑、Steam 等平台的游戏时长。</view>
+    <button class="btn setup-btn" bindtap="goSetup">连接坚果云</button>
+  </view>
+
+  <view wx:elif="{{state === 'loading'}}" class="empty">正在读取…</view>
+
+  <view wx:elif="{{state === 'error'}}" class="empty">
+    <view>{{error}}</view>
+    <view class="faint">下拉可以重试</view>
+  </view>
+
+  <block wx:else>
+    <view class="spread head">
+      <view class="greet">{{greeting}}</view>
+      <view class="faint">{{loading ? '更新中…' : '数据更新于 ' + updated}}</view>
+    </view>
+    <view wx:if="{{error}}" class="warn">{{error}}</view>
+
+    <!-- now playing -->
+    <view wx:for="{{playing}}" wx:key="game" class="card playing {{item.stale ? 'stale' : ''}}"
+          data-name="{{item.game}}" bindtap="openGame">
+      <view class="row">
+        <view class="avatar" style="{{item.avatar.style}}">{{item.avatar.initials}}</view>
+        <view class="grow">
+          <view class="live"><text class="dot"></text>{{item.stale ? '可能已结束' : '正在游玩'}} · {{item.platform}} · {{item.device}}</view>
+          <view class="game-name ellipsis">{{item.game}}</view>
+          <view class="faint">{{item.updated}}更新</view>
+        </view>
+        <view class="clock">{{item.clock}}</view>
+      </view>
+    </view>
+    <view wx:if="{{!playing.length}}" class="card idle">
+      <view class="idle-title">现在没有在玩游戏</view>
+      <view class="faint">电脑上开始游戏后，这里会显示实时时长（约 2 分钟更新一次）。</view>
+    </view>
+
+    <!-- tiles -->
+    <view class="tiles">
+      <view wx:for="{{tiles}}" wx:key="label" class="card tile">
+        <view class="muted tile-label">{{item.label}}</view>
+        <view class="tile-value">{{item.value}}</view>
+        <view class="faint" wx:if="{{item.sub}}">{{item.sub}}</view>
+        <view class="tile-bar" style="background: {{item.color}}"></view>
+      </view>
+    </view>
+
+    <!-- last 14 days -->
+    <view class="card">
+      <view class="spread">
+        <view class="section">近 14 天</view>
+        <view class="faint">合计 {{total14}} · 日均 {{avg14}}</view>
+      </view>
+      <view class="chart">
+        <view wx:for="{{bars}}" wx:key="key" class="col">
+          <view class="bar-wrap"><view class="bar" style="height: {{item.pct}}%"></view></view>
+          <view class="bar-label">{{item.showLabel ? item.label : ''}}</view>
+        </view>
+      </view>
+      <view wx:if="{{hasImports}}" class="faint note">从 Steam 等平台导入的历史时长没有日期，只计入累计和排行。</view>
+    </view>
+
+    <!-- recent -->
+    <view class="section">最近游玩</view>
+    <view class="card list">
+      <view wx:for="{{recent}}" wx:key="key" class="row item" data-name="{{item.game}}" bindtap="openGame">
+        <view class="avatar small" style="{{item.avatar.style}}">{{item.avatar.initials}}</view>
+        <view class="grow">
+          <view class="ellipsis">{{item.game}}</view>
+          <view class="faint">{{item.platform}} · {{item.when}}</view>
+        </view>
+        <view class="muted">{{item.dur}}</view>
+      </view>
+      <view wx:if="{{!recent.length}}" class="faint">还没有 PlayClock 自己记录的游玩。</view>
+    </view>
+
+    <!-- platforms -->
+    <view class="section">平台</view>
+    <view class="card">
+      <view wx:for="{{platforms}}" wx:key="name" class="plat">
+        <view class="spread"><text>{{item.name}}</text><text class="muted">{{item.dur}} · {{item.share}}%</text></view>
+        <view class="track"><view class="fill" style="width: {{item.pct}}%; background: {{item.color}}"></view></view>
+      </view>
+    </view>
+  </block>
+</view>

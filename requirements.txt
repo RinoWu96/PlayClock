@@ -1,6 +1,7 @@
 PySide6==6.8.1
 pyinstaller==6.11.1
 pytest
-# tests only: a local WebDAV server for the sync round-trip test
+# tests only: a local WebDAV server (sync round trip) and a JS engine (mini program tests)
 wsgidav==4.3.3
 cheroot==10.0.1
+quickjs==1.19.4

@@ -1,0 +1,28 @@
+<view class="page">
+  <view wx:if="{{state === 'setup'}}" class="empty">
+    <view>还没有连接坚果云</view>
+    <button class="btn setup-btn" bindtap="goSetup">去连接</button>
+  </view>
+  <view wx:elif="{{state !== 'ok'}}" class="empty">正在读取…</view>
+
+  <block wx:else>
+    <input class="search" placeholder="搜索游戏" placeholder-class="ph" value="{{query}}" bindinput="search" />
+    <scroll-view scroll-x class="chips" enable-flex>
+      <view wx:for="{{chips}}" wx:key="key" class="chip {{item.key === platform ? 'on' : ''}}"
+            data-key="{{item.key}}" bindtap="pick">{{item.text}}</view>
+    </scroll-view>
+    <view class="faint subtitle">{{subtitle}}</view>
+
+    <view class="card list">
+      <view wx:for="{{games}}" wx:key="name" class="row item" data-name="{{item.name}}" bindtap="openGame">
+        <view class="avatar" style="{{item.avatar.style}}">{{item.avatar.initials}}</view>
+        <view class="grow">
+          <view class="name ellipsis">{{item.name}}</view>
+          <view class="faint"><text class="badge">{{item.platforms}}</text>{{item.last}}</view>
+        </view>
+        <view class="total">{{item.total}}</view>
+      </view>
+      <view wx:if="{{!games.length}}" class="faint">没有匹配的游戏</view>
+    </view>
+  </block>
+</view>

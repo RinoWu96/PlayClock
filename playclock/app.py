@@ -153,9 +153,10 @@ class Controller(QObject):
         self.on_tick()
 
         self.syncing = False
-        self.sync_timer = QTimer(self)  # cloud sync every 10 minutes (network on a worker thread)
-        self.sync_timer.timeout.connect(self.sync_now)
-        self.sync_timer.start(10 * 60 * 1000)
+        self.last_auto_sync = 0.0
+        self.sync_timer = QTimer(self)  # cloud sync: every 2 min while playing, else every 10 (worker thread)
+        self.sync_timer.timeout.connect(self.auto_sync)
+        self.sync_timer.start(2 * 60 * 1000)
         QTimer.singleShot(5000, self.sync_now)
 
     def build_tray_menu(self):
@@ -345,15 +346,27 @@ class Controller(QObject):
     def sync_enabled(self) -> bool:
         return bool(self.cfg.get("webdav"))
 
+    def auto_sync(self):
+        """Keep phones watching summary.json close to live while a game runs; otherwise sync rarely."""
+        if self.tracker.current or time.time() - self.last_auto_sync >= 10 * 60 - 5:
+            self.sync_now()
+
     def sync_now(self, manual: bool = False):
         w = self.cfg.get("webdav")
         if not w or self.syncing:
             return
+        from .summary import NAME, build_summary, content_hash, encode_summary
         from .sync import WebDAV, digest, encode, export_payload, run_sync, unprotect  # only when sync is on
+        self.last_auto_sync = time.time()
         self.tracker.flush()
-        payload = export_payload(self.db, os.environ.get("COMPUTERNAME", "PC"))
+        me = os.environ.get("COMPUTERNAME", "PC")
+        payload = export_payload(self.db, me)
         h = digest(payload)
         upload = encode(payload) if h != self.cfg.get("sync_hash") else None
+        names = dict(self.cfg.get("sync_devices", {}), **{self.db.device: me})
+        summary = build_summary(self.db, self.platform_of, names)
+        sh = content_hash(summary)
+        extra = {NAME: encode_summary(summary)} if sh != self.cfg.get("summary_hash") else {}
         try:
             client = WebDAV(w["url"], w["user"], unprotect(w["pass"]))
         except Exception as e:  # e.g. config copied from another Windows user: DPAPI can't decrypt
@@ -363,10 +376,11 @@ class Controller(QObject):
         self.syncing = True
         if self.window:
             self.window.refresh_sync_state()
-        run_async(lambda: run_sync(client, self.db.device, upload, known),
-                  lambda result, error: self.sync_finished(result, error, h if upload else None, manual))
+        run_async(lambda: run_sync(client, self.db.device, upload, known, extra),
+                  lambda result, error: self.sync_finished(result, error, h if upload else None, manual,
+                                                           sh if extra else None))
 
-    def sync_finished(self, result, error, uploaded_hash, manual):
+    def sync_finished(self, result, error, uploaded_hash, manual, summary_hash=None):
         QTimer.singleShot(1000, self.release_memory)
         from .sync import SyncError, decode, live_devices, merge_payload
         self.syncing = False
@@ -391,6 +405,8 @@ class Controller(QObject):
             self.cfg.update(sync_tags=tags, sync_devices=devices, sync_error="", last_sync=time.time())
             if uploaded_hash:
                 self.cfg["sync_hash"] = uploaded_hash
+            if summary_hash:
+                self.cfg["summary_hash"] = summary_hash
             save_config(self.cfg)
             if changed:
                 self.changed()
@@ -403,12 +419,12 @@ class Controller(QObject):
     def set_webdav(self, url: str, user: str, password: str):
         from .sync import protect
         self.cfg.update(webdav={"url": url, "user": user, "pass": protect(password)},
-                        sync_tags={}, sync_hash="", sync_error="")
+                        sync_tags={}, sync_hash="", summary_hash="", sync_error="")
         save_config(self.cfg)
         self.sync_now(manual=True)
 
     def clear_webdav(self):
-        for k in ("webdav", "sync_tags", "sync_hash", "sync_error", "last_sync", "sync_devices"):
+        for k in ("webdav", "sync_tags", "sync_hash", "summary_hash", "sync_error", "last_sync", "sync_devices"):
             self.cfg.pop(k, None)
         save_config(self.cfg)
 

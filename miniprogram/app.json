@@ -1,0 +1,29 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/library/library",
+    "pages/settings/settings",
+    "pages/game/game"
+  ],
+  "window": {
+    "navigationBarTitleText": "PlayClock",
+    "navigationBarBackgroundColor": "#13161c",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#0e1014",
+    "backgroundTextStyle": "light"
+  },
+  "tabBar": {
+    "color": "#8b93a3",
+    "selectedColor": "#eceef2",
+    "backgroundColor": "#13161c",
+    "borderStyle": "black",
+    "list": [
+      { "pagePath": "pages/index/index", "text": "概览" },
+      { "pagePath": "pages/library/library", "text": "游戏库" },
+      { "pagePath": "pages/settings/settings", "text": "设置" }
+    ]
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents"
+}
