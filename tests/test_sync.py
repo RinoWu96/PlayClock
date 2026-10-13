@@ -4,7 +4,9 @@ import pytest
 
 from playclock.db import DB
 from playclock.importers import EmuGame, apply_import, plan_import
-from playclock.sync import WebDAV, SyncError, decode, encode, export_payload, merge_payload, protect, run_sync, unprotect
+from playclock.sync import (
+    SyncError, WebDAV, decode, encode, export_payload, live_devices, merge_payload, protect, run_sync, unprotect,
+)
 
 
 def two(tmp_path):
@@ -88,6 +90,11 @@ def test_old_database_is_migrated(tmp_path):
     assert len(row["uid"]) == 32 and row["device"] == "PC" and row["updated"] == 50
 
 
+def test_removed_devices_are_forgotten():
+    names = {"PC": "Desk", "OLD": "Old laptop"}
+    assert live_devices(names, {"PC.json.gz": "e1", "NEW.json.gz": "e2"}) == {"PC": "Desk"}
+
+
 def test_password_is_encrypted_for_this_user():
     token = protect("app-password")
     assert "app-password" not in token and unprotect(token) == "app-password"
@@ -132,7 +139,7 @@ def test_two_devices_sync_through_webdav(tmp_path, dav_server):
         return tags
 
     ka = sync(a, {})
-    kb = sync(b, {})
+    sync(b, {})
     ka = sync(a, ka)
     assert totals(a) == totals(b) == {"Zelda": 3600, "Mario Kart": 1800}
     assert set(ka) == {"A.json.gz", "B.json.gz"}

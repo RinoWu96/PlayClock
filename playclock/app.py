@@ -368,7 +368,7 @@ class Controller(QObject):
 
     def sync_finished(self, result, error, uploaded_hash, manual):
         QTimer.singleShot(1000, self.release_memory)
-        from .sync import decode, merge_payload, SyncError
+        from .sync import SyncError, decode, live_devices, merge_payload
         self.syncing = False
         if error is not None:
             msg = str(error)
@@ -379,7 +379,7 @@ class Controller(QObject):
             self.set_cfg("sync_error", msg)
         else:
             blobs, tags = result
-            devices = dict(self.cfg.get("sync_devices", {}))
+            devices = live_devices(self.cfg.get("sync_devices", {}), tags)  # drop devices whose file is gone
             changed = 0
             for blob in blobs.values():
                 try:

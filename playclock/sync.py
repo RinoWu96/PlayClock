@@ -174,6 +174,11 @@ def run_sync(client: WebDAV, device: str, upload: bytes | None, known: dict[str,
     return blobs, tags
 
 
+def live_devices(names: dict[str, str], tags: dict[str, str]) -> dict[str, str]:
+    """Known device names, keeping only devices whose file is still in the remote folder."""
+    return {d: n for d, n in names.items() if f"{d}.json.gz" in tags}
+
+
 # --------------------------------------------------------------------------- secrets
 
 
