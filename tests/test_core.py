@@ -129,3 +129,31 @@ def test_writes_are_batched(tmp_path):
     t.tick(35, playing)
     t.tick(40, [])                     # game closed -> final state written
     assert db.sessions()[0]["seconds"] == 35 and db.sessions()[0]["end"] == 35
+
+
+def test_pc_game_added_by_hand_is_tracked_by_full_path(tmp_path):
+    from playclock.pc import is_steam_game, suggest_name
+    db = DB(tmp_path / "t.db")
+    cfg = {"interval": 5, "min_session": 60, "resume_gap": 180,
+           "pc_games": [{"path": r"D:\Games\Hollow Knight\hollow_knight.exe", "name": "Hollow Knight"}]}
+    t = Tracker(db, RULES, cfg)
+    game = Window(2, 200, "hollow_knight.exe", "Hollow Knight", 2000, False, True,
+                  path=r"d:\games\HOLLOW KNIGHT\hollow_knight.exe")               # case doesn't matter
+    other = Window(3, 300, "hollow_knight.exe", "Hollow Knight", 2000, False, True,
+                   path=r"E:\Copy\hollow_knight.exe")                               # same exe name elsewhere: no
+    for i in range(0, 125, 5):
+        t.tick(1000.0 + i, [game])
+    assert t.current.game == "Hollow Knight" and t.current.emulator == "PC" and t.current.seconds == 120
+    t.stop()
+    t.tick(2000, [other])
+    assert t.current is None
+    t.tick(3000, [Window(2, 200, "hollow_knight.exe", "Hollow Knight", 2000, True, False,
+                         path=r"D:\Games\Hollow Knight\hollow_knight.exe")])       # minimized: not playing
+    assert t.current is None
+    assert [r["emulator"] for r in db.con.execute("SELECT emulator FROM sessions")] == ["PC"]
+
+    assert is_steam_game(r"C:\Program Files (x86)\Steam\steamapps\common\Hades\Hades.exe")
+    assert not is_steam_game(r"D:\Games\Hades\Hades.exe")
+    assert suggest_name(r"D:\Games\Elden Ring\Game\eldenring.exe") == "Elden Ring"
+    assert suggest_name(r"D:\Games\Some Game\Binaries\Win64\SomeGame-Win64-Shipping.exe") == "Some Game"
+    assert suggest_name(r"D:\game.exe") == "game"

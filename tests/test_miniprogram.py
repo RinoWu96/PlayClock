@@ -139,6 +139,9 @@ def test_pages_render_a_real_summary(js, tmp_path):
     assert idx["state"] == "ok"
     assert [p["game"] for p in idx["playing"]] == ["塞尔达传说 王国之泪"] and not idx["playing"][0]["stale"]
     assert idx["playing"][0]["device"] == "RHINO" and idx["playing"][0]["platform"] == "Switch"
+    badges = {g["name"]: g["platforms"] for g in out["library"]["games"]}
+    assert badges["Super Mario Odyssey"] == "Ryujinx"         # how it was played (library is filtered to Switch by now)
+    assert {r["platform"] for r in idx["recent"]} == {"Switch"}
     assert idx["tiles"][3]["value"] == "1284 小时 5 分"      # all-time: Steam import 1279h21m + Switch 4h44m
     assert len(idx["bars"]) == 14 and len(idx["recent"]) == 8
     assert [p["name"] for p in idx["platforms"]] == ["Steam", "Switch"]

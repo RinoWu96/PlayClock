@@ -3,6 +3,7 @@ import time
 from dataclasses import dataclass
 
 from .db import DB
+from .pc import PC, lookup, norm
 from .rules import Rule
 from .winapi import Window, list_windows
 
@@ -25,14 +26,24 @@ class Current:
     saved: float = 0.0     # when the row was last written
 
 
-def detect(rules: list[Rule], windows: list[Window]) -> tuple[list[Detection], list[tuple[str, Window]]]:
-    """Return (games found, all emulator windows seen) — the second list is for the debug view."""
+def detect(rules: list[Rule], windows: list[Window],
+           pc_games: dict[str, str] | None = None) -> tuple[list[Detection], list[tuple[str, Window]]]:
+    """Return (games found, all emulator / PC game windows seen) — the second list is for the debug view.
+    `pc_games`: normalised exe path -> game name (pc.lookup), checked before the emulator rules."""
     seen: list[tuple[str, Window]] = []
     found: list[Detection] = []
     by_pid: dict[int, list[Window]] = {}
     for w in windows:
         by_pid.setdefault(w.pid, []).append(w)
     for pid_windows in by_pid.values():
+        path = pid_windows[0].path
+        if pc_games and path and norm(path) in pc_games:
+            seen += [(PC, w) for w in pid_windows]
+            shown = [w for w in pid_windows if not w.minimized]
+            if shown:
+                w = max(shown, key=lambda w: w.area)
+                found.append(Detection(PC, pc_games[norm(path)], w.title, w.foreground))
+            continue
         rule = next((r for r in rules if r.matches_exe(pid_windows[0].exe)), None)
         if rule is None:
             continue
@@ -87,7 +98,8 @@ class Tracker:
         # A long gap means the PC slept or the app was blocked: don't count it.
         continuous = 0 < dt <= max(3 * interval, 30)
 
-        self.detections, self.seen = detect(self.rules, list_windows() if windows is None else windows)
+        self.detections, self.seen = detect(self.rules, list_windows() if windows is None else windows,
+                                            lookup(self.cfg.get("pc_games")))
         d = self._pick(self.detections)
         game = self.db.resolve(d.game) if d else None
 

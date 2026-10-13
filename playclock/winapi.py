@@ -49,13 +49,14 @@ class Window:
     area: int
     minimized: bool
     foreground: bool
+    path: str = ""  # full exe path (for PC games added by hand)
 
 
-# pid -> exe name, kept across polls (pruned to live pids) so processes aren't reopened every few seconds.
+# pid -> full exe path, kept across polls (pruned to live pids) so processes aren't reopened every few seconds.
 _exe_cache: dict[int, str] = {}
 
 
-def _exe_name(pid: int) -> str:
+def _exe_path(pid: int) -> str:
     h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not h:
         return ""
@@ -63,7 +64,7 @@ def _exe_name(pid: int) -> str:
         size = wt.DWORD(1024)
         buf = ctypes.create_unicode_buffer(size.value)
         if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
-            return os.path.basename(buf.value).lower()
+            return buf.value
         return ""
     finally:
         kernel32.CloseHandle(h)
@@ -88,13 +89,14 @@ def list_windows() -> list[Window]:
         if pid.value == own_pid:
             return True
         if pid.value not in _exe_cache:
-            _exe_cache[pid.value] = _exe_name(pid.value)
+            _exe_cache[pid.value] = _exe_path(pid.value)
+        path = _exe_cache[pid.value]
         r = wt.RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(r))
         out.append(Window(
-            hwnd=int(hwnd), pid=pid.value, exe=_exe_cache[pid.value], title=buf.value,
+            hwnd=int(hwnd), pid=pid.value, exe=os.path.basename(path).lower(), title=buf.value,
             area=max(0, r.right - r.left) * max(0, r.bottom - r.top),
-            minimized=bool(user32.IsIconic(hwnd)), foreground=int(hwnd) == int(fg),
+            minimized=bool(user32.IsIconic(hwnd)), foreground=int(hwnd) == int(fg), path=path,
         ))
         return True
 

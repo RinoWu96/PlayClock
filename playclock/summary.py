@@ -68,7 +68,10 @@ def build_summary(db: DB, platform_of, device_names: dict[str, str], now: float 
         per_platform[p] = per_platform.get(p, 0.0) + r["total"]
 
     covers = covers or {}
-    games = [{"name": r["game"], "platforms": platforms(r["emulators"]), "total": r["total"], "sessions": r["n"],
+    # "emulators" = how each game was played, for the library badge: Ryujinx, Steam, or the platform of a
+    # hand-entered session (Switch, PC)
+    games = [{"name": r["game"], "platforms": platforms(r["emulators"]),
+              "emulators": [e for e in (r["emulators"] or "").split(",") if e], "total": r["total"], "sessions": r["n"],
               "last": r["last"],
               "cover": f"{THUMB_DIR}/{thumb_name(covers[r['game']])}" if covers.get(r["game"]) else None}
              for r in db.game_stats()]
@@ -85,8 +88,7 @@ def build_summary(db: DB, platform_of, device_names: dict[str, str], now: float 
         "total": sum(g["total"] for g in games),
         "daily": [[d, s] for d, s in db.daily(DAYS)],
         "games": games,
-        "platforms": sorted(([p, s] for p, s in per_platform.items()), key=lambda kv: -kv[1]),
-        "recent": recent,
+        "platforms": sorted(([p, s] for p, s in per_platform.items()), key=lambda kv: -kv[1]),        "recent": recent,
         "has_imports": db.has_imports(),
     }
 

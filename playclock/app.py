@@ -762,6 +762,62 @@ class MainWindow(QMainWindow):
             self.db.add_manual(dlg.game, dlg.platform, dlg.seconds, dlg.end)
             self.refresh_current()
 
+    # --- PC games added by hand (pc.py) --------------------------------------
+    def add_pc_game(self, path: str = ""):
+        from .pc import is_steam_game, lookup, norm, suggest_name
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, tr("选择游戏的 exe"), "", tr("程序 (*.exe)"))
+            if not path:
+                return
+        path = os.path.normpath(path)
+        if is_steam_game(path):
+            QMessageBox.information(self, APP_TITLE, tr("这是 Steam 游戏：它的时长由「从 Steam 导入」获取，"
+                                                        "在这里再添加会重复计算。"))
+            return
+        games = self.cfg.get("pc_games", [])
+        if norm(path) in lookup(games):
+            QMessageBox.information(self, APP_TITLE, tr("这个程序已经添加过了：「{game}」。", game=lookup(games)[norm(path)]))
+            return
+        dlg = QInputDialog(self)
+        dlg.setWindowTitle(tr("添加 PC 游戏"))
+        dlg.setLabelText(tr("游戏名称：\n{path}\n可以选已有的游戏，时长会记在一起。", path=path))
+        dlg.setComboBoxItems(self.db.games())
+        dlg.setComboBoxEditable(True)
+        dlg.setTextValue(suggest_name(path))
+        dlg.resize(520, 160)
+        if not dlg.exec() or not dlg.textValue().strip():
+            return
+        self.ctrl.set_cfg("pc_games", games + [{"path": path, "name": dlg.textValue().strip()}])
+        self.refresh_current()
+
+    def add_running_pc_game(self):
+        """Pick one of the programs that have a window open right now (start the game first)."""
+        from .pc import is_steam_game, lookup, norm
+        from .winapi import list_windows
+        added = lookup(self.cfg.get("pc_games"))
+        emulators = {w.pid for _, w in self.tracker.seen}
+        choices: dict[str, str] = {}
+        for w in sorted(list_windows(), key=lambda w: w.area, reverse=True):
+            if (w.path and w.pid not in emulators and norm(w.path) not in added and not is_steam_game(w.path)
+                    and w.path not in choices.values()):
+                choices[f"{w.title}  —  {w.exe}"] = w.path
+        if not choices:
+            QMessageBox.information(self, APP_TITLE, tr("没有找到可以添加的程序。请先启动游戏，再回来点这个按钮。"))
+            return
+        item, ok = QInputDialog.getItem(self, tr("添加 PC 游戏"), tr("选择正在运行的游戏（先启动游戏再来选）："),
+                                        list(choices), 0, False)
+        if ok:
+            self.add_pc_game(choices[item])
+
+    def remove_pc_game(self, path: str):
+        from .pc import norm
+        games = self.cfg.get("pc_games", [])
+        g = next((g for g in games if norm(g["path"]) == norm(path)), None)
+        if g and QMessageBox.question(self, APP_TITLE, tr("不再为「{game}」自动计时吗？已有的游玩记录会保留。",
+                                                          game=g["name"])) == QMessageBox.Yes:
+            self.ctrl.set_cfg("pc_games", [x for x in games if x is not g])
+            self.refresh_current()
+
     def rename_game(self, game: str):
         dlg = QInputDialog(self)
         dlg.setWindowTitle(tr("重命名 / 合并"))

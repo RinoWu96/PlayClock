@@ -75,3 +75,27 @@ def test_formatting():
         assert i18n.tr("{n} 款游戏", n=3) == "3 款游戏"
     finally:
         i18n.set_language("zh")
+
+
+def test_phone_card_shows_the_code_or_a_placeholder(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtGui import QColor, QImage
+    from PySide6.QtWidgets import QApplication, QLabel
+    from playclock.ui.pages import phone_card
+    app = QApplication.instance() or QApplication([])
+    qr = lambda card: card.findChild(QLabel, "miniprogramQr")
+    assert "\n" in qr(phone_card(tmp_path / "missing.png")).text()          # placeholder
+    img = QImage(300, 300, QImage.Format_RGB32)
+    img.fill(QColor("white"))
+    img.save(str(tmp_path / "qr.png"))
+    card = phone_card(tmp_path / "qr.png")
+    shown = qr(card)
+    assert shown.text() == "" and shown.pixmap().width() == 132
+    assert app is not None
+
+
+def test_cover_badge_shows_how_the_game_was_played():
+    from playclock.ui.pages import played_badge
+    assert played_badge("Ryujinx") == "Ryujinx"
+    assert played_badge("Ryujinx,Switch,Ryujinx") == "Ryujinx · Switch"   # emulator + hand-entered console time
+    assert played_badge("Steam") == "Steam" and played_badge(None) == ""

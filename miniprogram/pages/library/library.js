@@ -36,7 +36,8 @@ Page({
       state: 'ok', chips, platform,
       subtitle: `${shown.length} 款游戏 · 合计 ${fmt.dur(total)}`,
       games: shown.slice(0, 300).map(x => ({
-        name: x.name, platforms: x.platforms.join(' · '), total: fmt.dur(x.total), last: fmt.ago(x.last),
+        // badge = how it was played: an emulator (Ryujinx), a console entered by hand (Switch), PC, Steam
+        name: x.name, platforms: (x.emulators || x.platforms).join(' · '), total: fmt.dur(x.total), last: fmt.ago(x.last),
         avatar: fmt.avatar(x.name), cover: covers.path(x.cover)
       }))
     })

@@ -1,9 +1,11 @@
 """The pages shown in the main window's content area."""
 import time
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QFormLayout, QHBoxLayout, QHeaderView, QLineEdit, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from . import theme
@@ -12,6 +14,38 @@ from .widgets import (
     BarChart, Card, Cover, FlowLayout, GameCard, NowPlaying, RankBars, SegmentBar, StatTile, Toggle,
     fmt_ago, fmt_date, fmt_dur, icon, label,
 )
+
+MINIPROGRAM_QR = Path(__file__).resolve().parent.parent / "assets" / "miniprogram_qr.png"  # bundled by build.bat
+
+
+def phone_card(qr_path: Path = MINIPROGRAM_QR) -> Card:
+    """Settings card pointing to the WeChat mini program; a placeholder until its code image is bundled."""
+    card = Card(spacing=12)
+    card.lay.addWidget(label(tr("手机查看"), "sectionTitle"))
+    row = QHBoxLayout()
+    row.setSpacing(18)
+    qr = QLabel()
+    qr.setObjectName("miniprogramQr")
+    qr.setFixedSize(132, 132)
+    qr.setAlignment(Qt.AlignCenter)
+    pix = QPixmap(str(qr_path)) if qr_path.exists() else QPixmap()
+    if pix.isNull():
+        qr.setText(tr("小程序码\n即将上线"))
+        qr.setStyleSheet(f"border: 1px dashed {theme.FAINT}; border-radius: 10px; color: {theme.MUTED};")
+    else:
+        qr.setPixmap(pix.scaled(132, 132, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+    row.addWidget(qr, 0, Qt.AlignTop)
+    text = QVBoxLayout()
+    text.setSpacing(6)
+    text.addWidget(label(tr("微信扫码打开 PlayClock 小程序"), wrap=True))
+    text.addWidget(label(tr("在手机上查看正在玩的游戏、每日时长、游戏库和封面。先在上面开启云同步，"
+                            "再在小程序的「设置」里填同一个坚果云账号和应用密码（建议另外生成一个）。"), "muted", wrap=True))
+    text.addWidget(label(tr("小程序只读取坚果云里 PlayClock 文件夹的汇总文件，不修改任何数据。"), "faint", wrap=True))
+    text.addStretch()
+    row.addLayout(text, 1)
+    card.lay.addLayout(row)
+    return card
+
 
 def midnight(days_ago: int = 0) -> float:
     lt = time.localtime()
@@ -37,8 +71,9 @@ def platforms_of(ctx, emulators: str | None) -> list[str]:
     return out
 
 
-def platforms_badge(ctx, emulators: str | None) -> str:
-    return " · ".join(platforms_of(ctx, emulators))
+def played_badge(emulators: str | None) -> str:
+    """Cover badge: how the game was played — the emulator (Ryujinx), Steam, or a hand-entered platform (Switch, PC)."""
+    return " · ".join(dict.fromkeys(e for e in (emulators or "").split(",") if e))
 
 
 def daily_points(rows):
@@ -219,7 +254,7 @@ class HomePage(Page):
         recent = sorted(stats, key=lambda r: r["last"] or 0, reverse=True)[:8]
         playing = self.ctx.current_game()
         for r in recent:
-            card = GameCard(r["game"], platforms_badge(self.ctx, r["emulators"]), r["total"], r["last"],
+            card = GameCard(r["game"], played_badge(r["emulators"]), r["total"], r["last"],
                             self.ctx.cover(r["game"]), r["game"] == playing)
             card.clicked.connect(self.ctx.open_game)
             card.menu_requested.connect(self.ctx.game_menu)
@@ -320,7 +355,7 @@ class LibraryPage(Page):
         self.grid.clear()
         playing = self.ctx.current_game()
         for r in rows:
-            card = GameCard(r["game"], " · ".join(r["platforms"]), r["total"], r["last"],
+            card = GameCard(r["game"], played_badge(r["emulators"]), r["total"], r["last"],
                             self.ctx.cover(r["game"]), r["game"] == playing)
             card.clicked.connect(self.ctx.open_game)
             card.menu_requested.connect(self.ctx.game_menu)
@@ -676,6 +711,23 @@ class SettingsPage(Page):
         detect.lay.addWidget(self.debug)
         self.lay.addWidget(detect)
 
+        pc = Card(spacing=10)
+        head = QHBoxLayout()
+        head.addWidget(label(tr("PC 游戏"), "sectionTitle"))
+        head.addStretch()
+        for text, fn in ((tr("从正在运行的程序添加…"), ctx.add_running_pc_game), (tr("选择 exe…"), ctx.add_pc_game)):
+            b = QPushButton(text)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, f=fn: f())
+            head.addWidget(b)
+        pc.lay.addLayout(head)
+        pc.lay.addWidget(label(tr("不在 Steam 里的电脑游戏：添加它的 exe 后，运行时会自动计时，平台记为 PC。"
+                                  "Steam 游戏请用「从 Steam 导入」，不要在这里添加，否则会重复计算。"), "faint", wrap=True))
+        self.pc_list = QVBoxLayout()
+        self.pc_list.setSpacing(6)
+        pc.lay.addLayout(self.pc_list)
+        self.lay.addWidget(pc)
+
         covers = Card(spacing=12)
         c_head = QHBoxLayout()
         c_head.addWidget(label(tr("封面"), "sectionTitle"))
@@ -741,6 +793,7 @@ class SettingsPage(Page):
         cloud.lay.addWidget(label(tr("通过你自己的坚果云（或任意 WebDAV 网盘）在多台电脑之间同步游玩记录，"
                                      "不经过任何第三方服务器。封面图暂不同步，每台设备会各自补全。"), "faint", wrap=True))
         self.lay.insertWidget(2, cloud)  # right after "General": header layout is 0, general card 1
+        self.lay.insertWidget(3, phone_card())
 
         data = Card(spacing=12)
         data.lay.addWidget(label(tr("数据"), "sectionTitle"))
@@ -769,6 +822,7 @@ class SettingsPage(Page):
                                  + tr("\n内置规则随软件版本更新；自己添加或修改的规则保存在 rules.user.json，更新时不会被覆盖。"))
         self.data_label.setText(tr("所有记录都只保存在本机：{path}", path=self.ctx.data_dir))
         self.refresh_sync()
+        self.refresh_pc_games()
         acc = self.ctx.cfg.get("steam_sync")
         self.steam_state.setText(tr("Steam 自动同步：已开启（账号 {acc}），Steam 记录有变化时会自动更新。", acc=acc) if acc
                                  else tr("Steam 自动同步：未开启。导入 Steam 时可以选择开启。"))
@@ -809,6 +863,36 @@ class SettingsPage(Page):
         self.b_sync_now.setVisible(on)
         self.b_sync_now.setEnabled(not self.ctx.ctrl.syncing)
         self.b_sync_off.setVisible(on)
+
+    def refresh_pc_games(self):
+        while self.pc_list.count():
+            item = self.pc_list.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                while item.layout().count():
+                    w = item.layout().takeAt(0).widget()
+                    if w:
+                        w.deleteLater()
+        games = self.ctx.cfg.get("pc_games", [])
+        if not games:
+            self.pc_list.addWidget(label(tr("还没有添加 PC 游戏。"), "muted"))
+        for g in games:
+            row = QHBoxLayout()
+            name = label(g["name"])
+            name.setFixedWidth(200)
+            name.setToolTip(g["name"])
+            row.addWidget(name)
+            path = label(g["path"], "faint")
+            path.setToolTip(g["path"])
+            path.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            row.addWidget(path, 1)
+            b = QPushButton(tr("移除"))
+            b.setObjectName("ghost")
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _=False, p=g["path"]: self.ctx.remove_pc_game(p))
+            row.addWidget(b)
+            self.pc_list.addLayout(row)
 
     def on_tick(self):
         lines = []

@@ -166,6 +166,7 @@ def test_summary_for_viewers(tmp_path):
     assert [(p["game"], p["platform"], p["device"]) for p in s["playing"]] == [("Zelda", "Switch", "Desk")]
     assert s["total"] == 1770 + 3600 + 360000
     assert {g["name"]: g["platforms"] for g in s["games"]} == {"Warframe": ["Steam"], "Mario": ["Switch"], "Zelda": ["Switch"]}
+    assert {g["name"]: g["emulators"] for g in s["games"]} == {"Warframe": ["Steam"], "Mario": ["Ryujinx"], "Zelda": ["Ryujinx"]}
     assert sum(d[1] for d in s["daily"]) == 1770 + 3600            # imported totals have no dates
     assert [r["game"] for r in s["recent"]] == ["Zelda", "Mario"]
     assert s["platforms"][0][0] == "Steam" and s["has_imports"]

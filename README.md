@@ -24,3 +24,7 @@
 | `playclock/importers.py` | 导入模拟器自带的时长记录（Ryujinx `games/*/gui/metadata.json`）；只补差额、可重复导入 |
 | `playclock/ui/` | 主题、自绘组件（封面、卡片、图表）、各页面、对话框（SteamGridDB 引导、封面搜索、导入预览） |
 | `playclock/app.py` | 主窗口、托盘、单实例、开机自启 |
+
+## 许可
+
+PlayClock 自己的代码没有附带开源许可证，保留所有权利：可以查看和使用发布的程序，但未经许可不能复制、修改或再分发代码。打包的第三方组件（PySide6 / Qt，LGPL-3.0 等）见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

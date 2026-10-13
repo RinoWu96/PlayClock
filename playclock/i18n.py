@@ -358,6 +358,36 @@ EN = {
     "停止云同步吗？本机和坚果云上的记录都会保留。":
         "Stop cloud sync? Records on this PC and in your Jianguoyun storage are kept.",
     "同步完成。": "Sync complete.",
+    # PC games added by hand
+    "PC 游戏": "PC games",
+    "从正在运行的程序添加…": "Add from running programs…",
+    "选择 exe…": "Choose exe…",
+    "不在 Steam 里的电脑游戏：添加它的 exe 后，运行时会自动计时，平台记为 PC。Steam 游戏请用「从 Steam 导入」，不要在这里添加，否则会重复计算。":
+        "PC games outside Steam: add a game's exe and it is timed automatically while it runs, as platform PC. "
+        "Use \"Import from Steam\" for Steam games instead — adding them here would count their time twice.",
+    "还没有添加 PC 游戏。": "No PC games added yet.",
+    "移除": "Remove",
+    "添加 PC 游戏": "Add PC game",
+    "选择游戏的 exe": "Choose the game's exe",
+    "程序 (*.exe)": "Programs (*.exe)",
+    "这是 Steam 游戏：它的时长由「从 Steam 导入」获取，在这里再添加会重复计算。":
+        "This is a Steam game: its time comes from \"Import from Steam\", so adding it here would count it twice.",
+    "这个程序已经添加过了：「{game}」。": "This program is already added as \"{game}\".",
+    "游戏名称：\n{path}\n可以选已有的游戏，时长会记在一起。":
+        "Game name:\n{path}\nPick an existing game to add the time to it.",
+    "没有找到可以添加的程序。请先启动游戏，再回来点这个按钮。":
+        "No program to add. Start the game first, then come back and click this button.",
+    "选择正在运行的游戏（先启动游戏再来选）：": "Choose the running game (start it first):",
+    "不再为「{game}」自动计时吗？已有的游玩记录会保留。":
+        "Stop timing \"{game}\" automatically? Its existing records are kept.",
+    "手机查看": "On your phone",
+    "小程序码\n即将上线": "Mini program\ncoming soon",
+    "微信扫码打开 PlayClock 小程序": "Scan with WeChat to open the PlayClock mini program",
+    "在手机上查看正在玩的游戏、每日时长、游戏库和封面。先在上面开启云同步，再在小程序的「设置」里填同一个坚果云账号和应用密码（建议另外生成一个）。":
+        "See what you're playing, daily time, your library and covers on your phone. Turn on cloud sync above, then "
+        "enter the same Jianguoyun account and an app password (preferably a separate one) in the mini program's settings.",
+    "小程序只读取坚果云里 PlayClock 文件夹的汇总文件，不修改任何数据。":
+        "The mini program only reads the summary file in the PlayClock folder of your Jianguoyun storage and never changes anything.",
     "坚果云账号或应用密码不正确。": "The account or app password isn't correct.",
     "游玩记录会保存在你自己的坚果云里，在多台电脑之间自动同步。坚果云免费版的流量对 PlayClock 来说绰绰有余。只需 3 步。":
         "Your play records are kept in your own Jianguoyun (Nutstore) storage and sync between PCs automatically. "
