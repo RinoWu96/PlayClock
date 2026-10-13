@@ -10,6 +10,16 @@
 4. 用规则里的正则（`pattern`，命名分组 `game`）从标题取出游戏名，再经过 `clean_title()` 清理：去掉 Switch Title ID、`(64-bit)`、PS 序列号、FPS、ROM 扩展名、末尾版本号等。
 5. `ignore` 正则命中的标题，表示「模拟器开着但没在玩」。
 
+### 读模拟器日志（`emulog.py`）
+
+Ryujinx 1.3 起运行游戏时，窗口标题只显示「Ryujinx <版本号>」，不再带游戏名。规则里标了 `"log": "ryujinx"` 的模拟器，标题里取不到游戏名时会改读它自己的日志：
+
+- 日志位置：exe 旁边的 `Logs\`、便携版的 `portable\Logs\`，或者 `%APPDATA%\Ryujinx\Logs\`。只跟踪修改时间最新的那个日志文件；文件换了，说明 Ryujinx 重启过，从头开始读。
+- `Application Loaded: <游戏名> v<版本> [<TitleID>]`：表示开始玩这个游戏。游戏名和 Ryujinx 自己记录的一致，所以和导入的 Ryujinx 时长能对上。
+- `Emulation was paused` / `Emulation was resumed`：暂停期间不计时。
+- `= TerminationRequested` 或 `Stopping audio processor`：表示游戏已经关闭，回到了游戏列表。
+- 每次检查只读日志新增的部分。如果最后一行还没写完，等它写完再处理。
+
 ### 计时规则
 
 - 两次检测间隔正常（≤ max(3×interval, 30 秒)），而且游戏不变：累加这段时间。

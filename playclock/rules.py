@@ -26,7 +26,8 @@ COMMON_IGNORE = [
 
 DEFAULT_RULES = [
     {"name": "Ryujinx", "platform": "Switch", "exe": ["ryujinx*.exe"],
-     "pattern": r"^Ryujinx\b.*?\s[-|]\s+(?P<game>.+)$"},
+     "pattern": r"^Ryujinx\b.*?\s[-|]\s+(?P<game>.+)$",
+     "log": "ryujinx"},  # 1.3+ titles show no game: read the log (game, pause, stop)
     {"name": "yuzu & forks", "platform": "Switch", "exe": ["yuzu*.exe", "suyu*.exe", "sudachi*.exe", "citron*.exe", "eden*.exe", "torzu*.exe"],
      "pattern": r"^[^|]+\|\s*(?:v?\d+(?:\.\d+)+[\w\-]*\s*\|\s*)?(?P<game>[^|]+?)\s*\|"},
     {"name": "Citra & forks", "platform": "3DS", "exe": ["citra-qt*.exe", "citra*.exe", "lime3ds*.exe", "azahar*.exe", "mandarine*.exe"],
@@ -100,6 +101,7 @@ class Rule:
     ignore: list[re.Pattern] = field(default_factory=list)
     fallback: str | None = None
     platform: str | None = None
+    log: str | None = None  # emulator log to read when the title has no game ("ryujinx")
 
     @classmethod
     def from_dict(cls, d: dict) -> "Rule":
@@ -111,6 +113,7 @@ class Rule:
             + ([] if d.get("pattern") else [re.compile(p) for p in COMMON_IGNORE]),
             fallback=d.get("fallback"),
             platform=d.get("platform"),
+            log=d.get("log"),
         )
 
     def matches_exe(self, exe: str) -> bool:

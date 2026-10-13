@@ -3,6 +3,7 @@ import time
 from dataclasses import dataclass
 
 from .db import DB
+from .emulog import RyujinxLog
 from .pc import PC, lookup, norm
 from .rules import Rule
 from .winapi import Window, list_windows
@@ -26,10 +27,11 @@ class Current:
     saved: float = 0.0     # when the row was last written
 
 
-def detect(rules: list[Rule], windows: list[Window],
-           pc_games: dict[str, str] | None = None) -> tuple[list[Detection], list[tuple[str, Window]]]:
+def detect(rules: list[Rule], windows: list[Window], pc_games: dict[str, str] | None = None,
+           logs: dict[str, RyujinxLog] | None = None) -> tuple[list[Detection], list[tuple[str, Window]]]:
     """Return (games found, all emulator / PC game windows seen) — the second list is for the debug view.
-    `pc_games`: normalised exe path -> game name (pc.lookup), checked before the emulator rules."""
+    `pc_games`: normalised exe path -> game name (pc.lookup), checked before the emulator rules.
+    `logs`: per-exe log readers kept between polls, for emulators whose title shows no game."""
     seen: list[tuple[str, Window]] = []
     found: list[Detection] = []
     by_pid: dict[int, list[Window]] = {}
@@ -55,7 +57,13 @@ def detect(rules: list[Rule], windows: list[Window],
                 game = rule.game_from_title(w.title)
                 if game:
                     hit = Detection(rule.name, game, w.title, w.foreground)
-        if hit is None and rule.fallback and any(not w.minimized for w in pid_windows):
+        shown = [w for w in pid_windows if not w.minimized]
+        if hit is None and rule.log == "ryujinx" and shown and logs is not None and pid_windows[0].path:
+            game, paused = logs.setdefault(pid_windows[0].path, RyujinxLog()).poll(pid_windows[0].path)
+            if game and not paused:  # a paused game isn't being played
+                w = max(shown, key=lambda w: w.area)
+                hit = Detection(rule.name, game, w.title, w.foreground)
+        if hit is None and rule.fallback and shown:
             w = max(pid_windows, key=lambda w: w.area)
             hit = Detection(rule.name, rule.fallback, w.title, w.foreground)
         if hit:
@@ -74,6 +82,7 @@ class Tracker:
         self.last_tick: float | None = None
         self.seen: list[tuple[str, Window]] = []
         self.detections: list[Detection] = []
+        self.logs: dict[str, RyujinxLog] = {}  # emulator log readers, kept so each poll reads only new lines
 
     def _pick(self, found: list[Detection]) -> Detection | None:
         if self.cfg.get("foreground_only"):
@@ -99,7 +108,7 @@ class Tracker:
         continuous = 0 < dt <= max(3 * interval, 30)
 
         self.detections, self.seen = detect(self.rules, list_windows() if windows is None else windows,
-                                            lookup(self.cfg.get("pc_games")))
+                                            lookup(self.cfg.get("pc_games")), self.logs)
         d = self._pick(self.detections)
         game = self.db.resolve(d.game) if d else None
 
