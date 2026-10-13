@@ -84,13 +84,18 @@ def test_phone_card_shows_the_code_or_a_placeholder(tmp_path, monkeypatch):
     from playclock.ui.pages import phone_card
     app = QApplication.instance() or QApplication([])
     qr = lambda card: card.findChild(QLabel, "miniprogramQr")
-    assert "\n" in qr(phone_card(tmp_path / "missing.png")).text()          # placeholder
+    from playclock.i18n import tr
+    pending = phone_card(tmp_path / "missing.png")                         # no code yet: "in development"
+    texts = [lb.text() for lb in pending.findChildren(QLabel)]
+    assert qr(pending).text() == tr("开发中") and tr("微信小程序（开发中）") in texts
+    assert tr("微信扫码打开 PlayClock 小程序") not in texts
     img = QImage(300, 300, QImage.Format_RGB32)
     img.fill(QColor("white"))
     img.save(str(tmp_path / "qr.png"))
     card = phone_card(tmp_path / "qr.png")
     shown = qr(card)
     assert shown.text() == "" and shown.pixmap().width() == 132
+    assert tr("微信扫码打开 PlayClock 小程序") in [lb.text() for lb in card.findChildren(QLabel)]
     assert app is not None
 
 

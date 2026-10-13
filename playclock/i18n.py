@@ -381,7 +381,11 @@ EN = {
     "不再为「{game}」自动计时吗？已有的游玩记录会保留。":
         "Stop timing \"{game}\" automatically? Its existing records are kept.",
     "手机查看": "On your phone",
-    "小程序码\n即将上线": "Mini program\ncoming soon",
+    "开发中": "In development",
+    "微信小程序（开发中）": "WeChat mini program (in development)",
+    "以后可以在手机上查看正在玩的游戏、每日时长、游戏库和封面，数据来自你开启云同步后的坚果云。现在还不能使用。":
+        "Later you'll be able to see what you're playing, daily time, your library and covers on your phone, "
+        "from your Jianguoyun storage once cloud sync is on. It isn't available yet.",
     "微信扫码打开 PlayClock 小程序": "Scan with WeChat to open the PlayClock mini program",
     "在手机上查看正在玩的游戏、每日时长、游戏库和封面。先在上面开启云同步，再在小程序的「设置」里填同一个坚果云账号和应用密码（建议另外生成一个）。":
         "See what you're playing, daily time, your library and covers on your phone. Turn on cloud sync above, then "

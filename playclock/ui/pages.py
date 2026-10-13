@@ -19,7 +19,7 @@ MINIPROGRAM_QR = Path(__file__).resolve().parent.parent / "assets" / "miniprogra
 
 
 def phone_card(qr_path: Path = MINIPROGRAM_QR) -> Card:
-    """Settings card pointing to the WeChat mini program; a placeholder until its code image is bundled."""
+    """Settings card pointing to the WeChat mini program; says "in development" until its code image is bundled."""
     card = Card(spacing=12)
     card.lay.addWidget(label(tr("手机查看"), "sectionTitle"))
     row = QHBoxLayout()
@@ -29,18 +29,24 @@ def phone_card(qr_path: Path = MINIPROGRAM_QR) -> Card:
     qr.setFixedSize(132, 132)
     qr.setAlignment(Qt.AlignCenter)
     pix = QPixmap(str(qr_path)) if qr_path.exists() else QPixmap()
-    if pix.isNull():
-        qr.setText(tr("小程序码\n即将上线"))
-        qr.setStyleSheet(f"border: 1px dashed {theme.FAINT}; border-radius: 10px; color: {theme.MUTED};")
-    else:
+    ready = not pix.isNull()
+    if ready:
         qr.setPixmap(pix.scaled(132, 132, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+    else:
+        qr.setText(tr("开发中"))
+        qr.setStyleSheet(f"border: 1px dashed {theme.FAINT}; border-radius: 10px; color: {theme.MUTED};")
     row.addWidget(qr, 0, Qt.AlignTop)
     text = QVBoxLayout()
     text.setSpacing(6)
-    text.addWidget(label(tr("微信扫码打开 PlayClock 小程序"), wrap=True))
-    text.addWidget(label(tr("在手机上查看正在玩的游戏、每日时长、游戏库和封面。先在上面开启云同步，"
-                            "再在小程序的「设置」里填同一个坚果云账号和应用密码（建议另外生成一个）。"), "muted", wrap=True))
-    text.addWidget(label(tr("小程序只读取坚果云里 PlayClock 文件夹的汇总文件，不修改任何数据。"), "faint", wrap=True))
+    if ready:
+        text.addWidget(label(tr("微信扫码打开 PlayClock 小程序"), wrap=True))
+        text.addWidget(label(tr("在手机上查看正在玩的游戏、每日时长、游戏库和封面。先在上面开启云同步，"
+                                "再在小程序的「设置」里填同一个坚果云账号和应用密码（建议另外生成一个）。"), "muted", wrap=True))
+        text.addWidget(label(tr("小程序只读取坚果云里 PlayClock 文件夹的汇总文件，不修改任何数据。"), "faint", wrap=True))
+    else:
+        text.addWidget(label(tr("微信小程序（开发中）"), wrap=True))
+        text.addWidget(label(tr("以后可以在手机上查看正在玩的游戏、每日时长、游戏库和封面，数据来自你开启云同步后的坚果云。"
+                                "现在还不能使用。"), "muted", wrap=True))
     text.addStretch()
     row.addLayout(text, 1)
     card.lay.addLayout(row)

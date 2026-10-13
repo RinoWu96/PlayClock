@@ -1,6 +1,6 @@
 # PlayClock · 模拟器游戏时长记录
 
-托盘常驻的游戏时长记录：读取模拟器窗口标题识别正在运行的游戏并计时；还可导入 Steam、Ryujinx 自带的时长记录，以及手动添加主机上的时长。数据全部保存在本地 SQLite。
+托盘常驻的游戏时长记录：读取模拟器窗口标题识别正在运行的游戏并计时；手动添加的非 Steam PC 游戏按 exe 自动计时；还可导入 Steam、Ryujinx 自带的时长记录，以及手动添加主机上的时长。数据全部保存在本地 SQLite，可以通过自己的坚果云（WebDAV）在多台电脑之间同步。
 
 工作原理、数据格式、统计口径和「怎么加一个新模拟器」见 [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md)。推送代码后 GitHub Actions 会在 Windows 上自动跑测试。
 
@@ -8,6 +8,10 @@
 - 环境：`uv venv --python 3.11 .venv` 后 `uv pip install --python .venv\Scripts\python.exe -r requirements.txt`
 - 开发：`.venv\Scripts\python.exe main.py`；测试：`.venv\Scripts\python.exe -m pytest -q tests`
 - 打包：`build.bat`（输出到 `dist\PlayClock`；不要把 distpath 设成项目根目录——Windows 不区分大小写，会和 `playclock\` 源码包撞名）
+
+## 微信小程序（开发中）
+
+`miniprogram/` 是一个只读的手机端，读取电脑端同步到坚果云的 `PlayClock/summary.json` 和封面缩略图。还在开发中，尚未发布，暂时不能使用。
 
 ## 代码结构
 
