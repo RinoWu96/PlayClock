@@ -162,9 +162,11 @@ class WebDAV:
 
 
 def run_sync(client: WebDAV, device: str, upload: bytes | None, known: dict[str, str],
-             extra: dict[str, bytes] | None = None):
+             extra: dict[str, bytes] | None = None, thumbs: dict | None = None):
     """One round of network work (worker thread). Returns (downloaded blobs by name, new version tags).
-    `extra` = other files to write in the PlayClock folder (summary.json for the mini program)."""
+    `extra` = other files to write in the PlayClock folder (summary.json for the mini program).
+    `thumbs` = {"files": {remote name: local cover path}, "make": fn(path) -> jpeg bytes, "batch": n}:
+    cover thumbnails the phone shows; only ones missing remotely are made and uploaded, n per round."""
     client.ensure_dir(FOLDER)
     client.ensure_dir(f"{FOLDER}/devices")
     own = f"{device}.json.gz"
@@ -172,6 +174,14 @@ def run_sync(client: WebDAV, device: str, upload: bytes | None, known: dict[str,
         client.put(f"{FOLDER}/devices/{own}", upload)
     for name, data in (extra or {}).items():
         client.put(f"{FOLDER}/{name}", data)
+    if thumbs and thumbs["files"]:
+        client.ensure_dir(f"{FOLDER}/covers")
+        have = client.listing(f"{FOLDER}/covers")
+        todo = [n for n in thumbs["files"] if n not in have][:thumbs.get("batch", 60)]
+        for name in todo:
+            data = thumbs["make"](thumbs["files"][name])
+            if data:
+                client.put(f"{FOLDER}/covers/{name}", data)
     tags = client.listing(f"{FOLDER}/devices")
     blobs = {name: client.get(f"{FOLDER}/devices/{name}")
              for name, tag in tags.items() if name != own and name.endswith(".json.gz") and known.get(name) != tag}

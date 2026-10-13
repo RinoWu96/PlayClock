@@ -15,7 +15,10 @@
 
     <view class="card list">
       <view wx:for="{{games}}" wx:key="name" class="row item" data-name="{{item.name}}" bindtap="openGame">
-        <view class="avatar" style="{{item.avatar.style}}">{{item.avatar.initials}}</view>
+        <view class="avatar" style="{{item.cover ? '' : item.avatar.style}}">
+          <image wx:if="{{item.cover}}" class="thumb" src="{{item.cover}}" mode="aspectFill" lazy-load />
+          <block wx:else>{{item.avatar.initials}}</block>
+        </view>
         <view class="grow">
           <view class="name ellipsis">{{item.name}}</view>
           <view class="faint"><text class="badge">{{item.platforms}}</text>{{item.last}}</view>

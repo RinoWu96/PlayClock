@@ -1,4 +1,5 @@
 const fmt = require('../../utils/format')
+const covers = require('../../utils/covers')
 const app = getApp()
 
 const STALE = 6 * 60   // "playing now" older than this is shown as possibly ended (desktop uploads every 2 min)
@@ -30,10 +31,11 @@ Page({
     if (!s) return this.setData({ state: g.loading ? 'loading' : 'error', error: g.error, loading: g.loading })
     const now = Date.now() / 1000
     const p = fmt.periods(s.daily)
+    const cover = covers.byGame(s)
     const playing = s.playing.map(x => {
       const age = now - x.updated
       return {
-        game: x.game, platform: x.platform, device: x.device, avatar: fmt.avatar(x.game),
+        game: x.game, platform: x.platform, device: x.device, avatar: fmt.avatar(x.game), cover: cover[x.game] || '',
         clock: fmt.clock(x.seconds), stale: age > STALE, updated: fmt.ago(x.updated)
       }
     })
@@ -54,7 +56,8 @@ Page({
       bars, total14: fmt.dur(total14), avg14: fmt.dur(total14 / 14),
       recent: s.recent.slice(0, 8).map(r => ({
         key: r.start + r.game,
-        game: r.game, platform: r.platform, when: fmt.date(r.start, true), dur: fmt.dur(r.seconds), avatar: fmt.avatar(r.game)
+        game: r.game, platform: r.platform, when: fmt.date(r.start, true), dur: fmt.dur(r.seconds), avatar: fmt.avatar(r.game),
+        cover: cover[r.game] || ''
       })),
       platforms: s.platforms.map(([name, sec], i) => ({
         name, dur: fmt.dur(sec, true), pct: Math.max(2, Math.round(sec / platformsTotal * 100)),

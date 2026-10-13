@@ -1,4 +1,5 @@
 const fmt = require('../../utils/format')
+const covers = require('../../utils/covers')
 const app = getApp()
 
 Page({
@@ -20,7 +21,7 @@ Page({
       key: r.start, when: fmt.date(r.start, true), platform: r.platform, dur: fmt.dur(r.seconds)
     }))
     this.setData({
-      found: true, name: this.name, avatar: fmt.avatar(this.name),
+      found: true, name: this.name, avatar: fmt.avatar(this.name), cover: covers.path(game.cover),
       platforms: game.platforms.join(' / '),
       playing: playing ? fmt.clock(playing.seconds) : '',
       total: fmt.dur(game.total),

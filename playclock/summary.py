@@ -12,12 +12,39 @@ from .db import DATED, DB
 
 FORMAT = 1
 NAME = "summary.json"
+THUMB_DIR = "covers"          # PlayClock/covers/<cover file stem>.jpg on the WebDAV side
+THUMB_SIZE = (460, 215)       # Steam header size: matches the cards on both desktop and phone
+THUMB_BATCH = 60              # thumbnails uploaded per sync, so the first upload doesn't block one long sync
 ACTIVE_WINDOW = 240   # a tracked session updated within this many seconds counts as "playing now"
 DAYS = 60
 RECENT = 30
 
 
-def build_summary(db: DB, platform_of, device_names: dict[str, str], now: float | None = None) -> dict:
+def thumb_name(cover_file: str) -> str:
+    """Remote thumbnail name for a local cover file (data/covers/<uuid>.png -> <uuid>.jpg)."""
+    return cover_file.rsplit(".", 1)[0] + ".jpg"
+
+
+def make_thumb(path) -> bytes | None:
+    """Centre-cropped 460x215 JPEG of a cover image. Safe on a worker thread (QImage, not QPixmap)."""
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
+    from PySide6.QtGui import QImage
+    img = QImage(str(path))
+    if img.isNull():
+        return None
+    w, h = THUMB_SIZE
+    img = img.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+    img = img.copy((img.width() - w) // 2, (img.height() - h) // 2, w, h).convertToFormat(QImage.Format_RGB32)
+    data = QByteArray()
+    buf = QBuffer(data)
+    buf.open(QIODevice.WriteOnly)
+    img.save(buf, "JPG", 82)
+    return bytes(data)
+
+
+def build_summary(db: DB, platform_of, device_names: dict[str, str], now: float | None = None,
+                  covers: dict[str, str] | None = None) -> dict:
+    """`covers`: game -> local cover file name; games with one get "cover": "covers/<stem>.jpg"."""
     now = time.time() if now is None else now
 
     def platforms(emulators: str | None) -> list[str]:
@@ -40,8 +67,11 @@ def build_summary(db: DB, platform_of, device_names: dict[str, str], now: float 
         p = platform_of(r["emulator"])
         per_platform[p] = per_platform.get(p, 0.0) + r["total"]
 
+    covers = covers or {}
     games = [{"name": r["game"], "platforms": platforms(r["emulators"]), "total": r["total"], "sessions": r["n"],
-              "last": r["last"]} for r in db.game_stats()]
+              "last": r["last"],
+              "cover": f"{THUMB_DIR}/{thumb_name(covers[r['game']])}" if covers.get(r["game"]) else None}
+             for r in db.game_stats()]
 
     recent = [{"game": r["game"], "platform": platform_of(r["emulator"]), "start": r["start"], "end": r["end"],
                "seconds": r["seconds"]} for r in db.con.execute(

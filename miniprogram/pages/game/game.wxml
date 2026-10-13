@@ -2,7 +2,10 @@
   <view wx:if="{{!found}}" class="empty">没有找到「{{name}}」的记录</view>
   <block wx:else>
     <view class="hero card">
-      <view class="cover" style="{{avatar.style}}">{{avatar.initials}}</view>
+      <view class="cover" style="{{cover ? '' : avatar.style}}">
+        <image wx:if="{{cover}}" class="thumb" src="{{cover}}" mode="aspectFill" />
+        <block wx:else>{{avatar.initials}}</block>
+      </view>
       <view class="muted plats">
         <text wx:if="{{playing}}" class="live">● 正在游玩 · 本次 {{playing}}　</text>{{platforms}}
       </view>

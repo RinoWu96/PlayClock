@@ -118,6 +118,10 @@ class DB:
         row = self.con.execute("SELECT cover FROM meta WHERE game=?", (game,)).fetchone()
         return row["cover"] if row else None
 
+    def covers(self) -> dict[str, str]:
+        """game -> cover file name, for games that have one."""
+        return {r[0]: r[1] for r in self.con.execute("SELECT game, cover FROM meta WHERE cover IS NOT NULL")}
+
     def set_cover(self, game: str, cover: str | None) -> None:
         with self.con:
             self.con.execute("INSERT INTO meta(game, cover) VALUES(?, ?) ON CONFLICT(game) DO UPDATE SET cover=excluded.cover",

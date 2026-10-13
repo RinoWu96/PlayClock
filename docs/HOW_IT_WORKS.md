@@ -116,6 +116,11 @@ SQLite 文件 `data/playtime.db`。
 - **频率**：启动 5 秒后、每 10 分钟、打开窗口时、以及点「立即同步」时各同步一次。
 - **密码**：用 Windows DPAPI（`CryptProtectData`）加密后保存在 `config.json` 里，只有当前 Windows 用户能解密。
 - **测试**：`tests/test_sync.py` 用 wsgidav 在本机启动一个真正的 WebDAV 服务器，跑完整的双设备同步。
+- **给小程序的文件**（`summary.py`）：微信小程序不能发 PROPFIND，所以每次同步电脑端还会写两样东西，小程序只用普通 GET 读取：
+  - `PlayClock/summary.json`：汇总好的统计（正在玩、每日时长、游戏列表等），内容没变就不重新上传。每个有封面的游戏带 `"cover": "covers/<id>.jpg"`。
+  - `PlayClock/covers/<id>.jpg`：封面缩略图，从 `data/covers/<id>.png` 居中裁成 460×215（Steam 横幅比例）的 JPEG（质量 82）。只上传远端还没有的，每次同步最多 60 张，封面多时分几次传完。换封面会得到新的文件名，所以小程序端按文件名永久缓存。
+  - 小程序（`miniprogram/utils/covers.js`）用 `wx.downloadFile`（带 Basic 认证）把缩略图下载到 `wx.env.USER_DATA_PATH/covers/`，同时最多 4 个；下载失败的 5 分钟后重试；不再用到的缓存文件会删除。没下载到之前显示首字母头像。
+  - 同步只会写 `devices/<本机>.json.gz`、`summary.json` 和 `covers/*`，不会删除或改动 `PlayClock` 文件夹里的其他文件。
 
 ## 6. 后台占用
 

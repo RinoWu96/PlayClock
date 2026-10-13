@@ -1,10 +1,12 @@
 const store = require('./utils/store')
+const covers = require('./utils/covers')
 
 App({
   globalData: { summary: null, error: '', loading: false, listeners: [] },
 
   onLaunch() {
     this.globalData.summary = store.cachedSummary()
+    covers.listen(() => this.emit())          // re-render pages as thumbnails arrive
   },
 
   // Fetch the latest summary.json; every page subscribed via watch() gets the new state.
@@ -14,7 +16,7 @@ App({
     g.loading = true
     this.emit()
     g.pending = store.loadSummary()
-      .then(s => { g.summary = s; g.error = '' })
+      .then(s => { g.summary = s; g.error = ''; covers.sync(s, store.account()) })
       .catch(e => { g.error = e.message === 'NO_ACCOUNT' ? 'NO_ACCOUNT' : e.message })
       .then(() => { g.loading = false; this.emit() })
     return g.pending

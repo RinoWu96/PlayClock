@@ -1,6 +1,7 @@
 // Reads PlayClock/summary.json from the user's own 坚果云 (WebDAV) with a plain GET.
 // Mini programs can't send WebDAV PROPFIND, which is why the desktop app writes this one summary file.
 const base64 = require('./base64')
+const covers = require('./covers')
 
 const DEFAULT_URL = 'https://dav.jianguoyun.com/dav/'
 const KEY = 'playclock_dav'
@@ -17,6 +18,7 @@ function saveAccount(user, pass, url) {
 function clearAccount() {
   wx.removeStorageSync(KEY)
   wx.removeStorageSync(CACHE)
+  covers.clear()
 }
 
 function request(acc, path) {

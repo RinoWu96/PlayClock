@@ -355,7 +355,7 @@ class Controller(QObject):
         w = self.cfg.get("webdav")
         if not w or self.syncing:
             return
-        from .summary import NAME, build_summary, content_hash, encode_summary
+        from .summary import NAME, THUMB_BATCH, build_summary, content_hash, encode_summary, make_thumb, thumb_name
         from .sync import WebDAV, digest, encode, export_payload, run_sync, unprotect  # only when sync is on
         self.last_auto_sync = time.time()
         self.tracker.flush()
@@ -364,7 +364,10 @@ class Controller(QObject):
         h = digest(payload)
         upload = encode(payload) if h != self.cfg.get("sync_hash") else None
         names = dict(self.cfg.get("sync_devices", {}), **{self.db.device: me})
-        summary = build_summary(self.db, self.platform_of, names)
+        covers = {g: c for g, c in self.db.covers().items() if (COVERS / c).exists()}
+        summary = build_summary(self.db, self.platform_of, names, covers=covers)
+        thumbs = {"files": {thumb_name(c): COVERS / c for c in covers.values()}, "make": make_thumb,
+                  "batch": THUMB_BATCH}
         sh = content_hash(summary)
         extra = {NAME: encode_summary(summary)} if sh != self.cfg.get("summary_hash") else {}
         try:
@@ -376,7 +379,7 @@ class Controller(QObject):
         self.syncing = True
         if self.window:
             self.window.refresh_sync_state()
-        run_async(lambda: run_sync(client, self.db.device, upload, known, extra),
+        run_async(lambda: run_sync(client, self.db.device, upload, known, extra, thumbs),
                   lambda result, error: self.sync_finished(result, error, h if upload else None, manual,
                                                            sh if extra else None))
 

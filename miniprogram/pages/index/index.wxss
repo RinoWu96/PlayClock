@@ -32,7 +32,7 @@
 .list { padding: 8rpx 28rpx; }
 .item { padding: 18rpx 0; border-bottom: 1rpx solid var(--border); }
 .item:last-child { border-bottom: none; }
-.avatar.small { width: 72rpx; height: 72rpx; font-size: 26rpx; border-radius: 16rpx; }
+.avatar.small { width: 136rpx; height: 64rpx; font-size: 26rpx; border-radius: 12rpx; }
 
 .plat { margin-bottom: 22rpx; }
 .plat:last-child { margin-bottom: 0; }

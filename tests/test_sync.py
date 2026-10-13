@@ -179,3 +179,47 @@ def test_summary_is_uploaded_next_to_device_files(tmp_path, dav_server):
     run_sync(client, "PC", b"x", {}, extra={"summary.json": b'{"format":1}'})
     assert client.get("PlayClock/summary.json") == b'{"format":1}'
     assert set(client.listing("PlayClock/devices")) == {"PC.json.gz"}   # summary is not mistaken for a device
+
+
+def test_thumbnail_is_a_centre_cropped_jpeg(tmp_path):
+    pytest.importorskip("PySide6")
+    from PySide6.QtGui import QColor, QImage
+    from playclock.summary import THUMB_SIZE, make_thumb, thumb_name
+    src = QImage(600, 900, QImage.Format_RGB32)                   # tall SteamGridDB-style grid
+    src.fill(QColor("red"))
+    src.save(str(tmp_path / "abc.png"))
+    data = make_thumb(tmp_path / "abc.png")
+    assert data[:3] == b"\xff\xd8\xff"
+    out = QImage.fromData(data)
+    assert (out.width(), out.height()) == THUMB_SIZE
+    assert make_thumb(tmp_path / "missing.png") is None
+    assert thumb_name("abc.def.png") == "abc.def.jpg"
+
+
+def test_summary_lists_covers(tmp_path):
+    from playclock.summary import build_summary
+    db = DB(tmp_path / "a.db", device="PC")
+    db.add_manual("Zelda", "Switch", 60, 100)
+    db.add_manual("Mario", "Switch", 60, 100)
+    s = build_summary(db, lambda e: e, {}, covers={"Zelda": "u1.png"})
+    assert {g["name"]: g["cover"] for g in s["games"]} == {"Zelda": "covers/u1.jpg", "Mario": None}
+
+
+def test_only_missing_thumbnails_are_uploaded_in_batches(tmp_path, dav_server):
+    client = WebDAV(dav_server, "me@example.com", "app-pass")
+    made = []
+
+    def make(path):
+        made.append(path)
+        return b"jpeg-" + path.encode()
+
+    files = {f"g{i}.jpg": f"local{i}" for i in range(5)}
+    run_sync(client, "PC", b"x", {}, thumbs={"files": files, "make": make, "batch": 3})
+    assert len(made) == 3
+    run_sync(client, "PC", None, {}, thumbs={"files": files, "make": make, "batch": 3})
+    assert len(made) == 5 and len(set(made)) == 5                  # second round only did the rest
+    run_sync(client, "PC", None, {}, thumbs={"files": files, "make": make, "batch": 3})
+    assert len(made) == 5                                          # nothing left -> nothing made
+    assert set(client.listing("PlayClock/covers")) == set(files)
+    assert client.get("PlayClock/covers/g4.jpg") == b"jpeg-local4"
+    assert set(client.listing("PlayClock/devices")) == {"PC.json.gz"}

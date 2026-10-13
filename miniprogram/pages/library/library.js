@@ -1,4 +1,5 @@
 const fmt = require('../../utils/format')
+const covers = require('../../utils/covers')
 const app = getApp()
 
 Page({
@@ -36,7 +37,7 @@ Page({
       subtitle: `${shown.length} 款游戏 · 合计 ${fmt.dur(total)}`,
       games: shown.slice(0, 300).map(x => ({
         name: x.name, platforms: x.platforms.join(' · '), total: fmt.dur(x.total), last: fmt.ago(x.last),
-        avatar: fmt.avatar(x.name)
+        avatar: fmt.avatar(x.name), cover: covers.path(x.cover)
       }))
     })
   },

@@ -23,7 +23,10 @@
     <view wx:for="{{playing}}" wx:key="game" class="card playing {{item.stale ? 'stale' : ''}}"
           data-name="{{item.game}}" bindtap="openGame">
       <view class="row">
-        <view class="avatar" style="{{item.avatar.style}}">{{item.avatar.initials}}</view>
+        <view class="avatar" style="{{item.cover ? '' : item.avatar.style}}">
+          <image wx:if="{{item.cover}}" class="thumb" src="{{item.cover}}" mode="aspectFill" />
+          <block wx:else>{{item.avatar.initials}}</block>
+        </view>
         <view class="grow">
           <view class="live"><text class="dot"></text>{{item.stale ? '可能已结束' : '正在游玩'}} · {{item.platform}} · {{item.device}}</view>
           <view class="game-name ellipsis">{{item.game}}</view>
@@ -66,7 +69,10 @@
     <view class="section">最近游玩</view>
     <view class="card list">
       <view wx:for="{{recent}}" wx:key="key" class="row item" data-name="{{item.game}}" bindtap="openGame">
-        <view class="avatar small" style="{{item.avatar.style}}">{{item.avatar.initials}}</view>
+        <view class="avatar small" style="{{item.cover ? '' : item.avatar.style}}">
+          <image wx:if="{{item.cover}}" class="thumb" src="{{item.cover}}" mode="aspectFill" />
+          <block wx:else>{{item.avatar.initials}}</block>
+        </view>
         <view class="grow">
           <view class="ellipsis">{{item.game}}</view>
           <view class="faint">{{item.platform}} · {{item.when}}</view>

@@ -33,13 +33,33 @@ var wx = {
   setStorageSync: function (k, v) { __storage[k] = v; },
   removeStorageSync: function (k) { delete __storage[k]; },
   request: function (o) { __requests.push(o); },
+  downloadFile: function (o) { __downloads.push(o); },     // tests answer them with __answer()
+  env: { USER_DATA_PATH: 'wxfile://usr' },
+  getFileSystemManager: function () {
+    return {
+      accessSync: function (p) { if (!__files[p]) throw new Error('no such file ' + p); },
+      mkdirSync: function (p) { __files[p] = 'dir'; },
+      unlinkSync: function (p) { if (!__files[p]) throw new Error('no such file'); delete __files[p]; }
+    };
+  },
   setNavigationBarTitle: function () {}, stopPullDownRefresh: function () {},
   navigateTo: function () {}, switchTab: function () {}, showModal: function () {}
 };
+var __downloads = [], __files = {}, __timers = [];
+// answer a pending download (the oldest, or the one for `name`) with an HTTP status (200 writes the file)
+function __answer(status, name) {
+  var i = name ? __downloads.findIndex(function (d) { return d.url.endsWith("/" + name); }) : 0;
+  var o = __downloads.splice(i, 1)[0];
+  if (status === 200) __files[o.filePath] = true;
+  if (status) o.success({ statusCode: status }); else o.fail({ errMsg: 'downloadFile:fail' });
+  return o;
+}
 function App(cfg) { __app = cfg; __app.globalData = JSON.parse(JSON.stringify(cfg.globalData)); }
 function getApp() { return __app; }
 function Page(cfg) { __pages[__current] = cfg; }
 function setInterval() { return 1; } function clearInterval() {}
+function setTimeout(fn) { __timers.push(fn); return __timers.length; }
+function __flushTimers() { var t = __timers; __timers = []; t.forEach(function (f) { f(); }); }
 var __current = '';
 function __page(id) {
   var p = Object.assign({}, __pages[id]);
@@ -59,10 +79,10 @@ def load(ctx, rel):
 def js():
     ctx = quickjs.Context()
     ctx.eval(RUNTIME)
-    for f in ("utils/base64.js", "utils/format.js", "utils/store.js"):
+    for f in ("utils/base64.js", "utils/format.js", "utils/covers.js", "utils/store.js"):
         load(ctx, f)
     load(ctx, "app.js")
-    ctx.eval('__current="app.js"; __require("app.js")("./app.js")')
+    ctx.eval('__current="app.js"; __require("app.js")("./app.js"); __app.onLaunch()')
     for page in ("index", "library", "game", "settings"):
         rel = f"pages/{page}/{page}.js"
         load(ctx, rel)
@@ -99,7 +119,8 @@ def summary_fixture(tmp_path):
         s = db.start_session("Super Mario Odyssey", "Ryujinx", now - d * 86400)
         db.update_session(s, now - d * 86400 + 1800, 1800)
     apply_import(db, plan_import(db, [EmuGame("Warframe 星际战甲", 4605660, now - 9e6)], "Steam"), "Steam", "steam:1")
-    return build_summary(db, lambda e: {"Ryujinx": "Switch"}.get(e, e), {"PC": "RHINO"}, now)
+    return build_summary(db, lambda e: {"Ryujinx": "Switch"}.get(e, e), {"PC": "RHINO"}, now,
+                         covers={"Super Mario Odyssey": "m1.png", "Warframe 星际战甲": "w1.png"})
 
 
 def test_pages_render_a_real_summary(js, tmp_path):
@@ -141,3 +162,73 @@ def test_request_sends_basic_auth_to_summary_file(js):
     req = json.loads(js.eval("JSON.stringify(__requests[0])"))
     assert req["url"] == "https://dav.jianguoyun.com/dav/PlayClock/summary.json" and req["method"] == "GET"
     assert req["header"]["Authorization"] == "Basic " + base64.b64encode(b"me@example.com:app-pass").decode()
+
+
+def drain(js):
+    while js.execute_pending_job():
+        pass
+
+
+def test_covers_download_once_with_auth_and_show_up(js, tmp_path):
+    summary = summary_fixture(tmp_path)
+    js.eval(f"""
+      __storage.playclock_dav = {{ user: 'me@example.com', pass: 'app-pass', url: 'https://dav.jianguoyun.com/dav' }};
+      var S = {json.dumps(summary, ensure_ascii=False)};
+      var covers = __require('x.js')('./utils/covers.js');
+      var renders = 0; __app.watch(function () {{ renders++; }});
+      covers.sync(S, __storage.playclock_dav);
+    """)
+    reqs = json.loads(js.eval("JSON.stringify(__downloads)"))
+    assert len(reqs) == 2
+    assert {r["url"] for r in reqs} == {"https://dav.jianguoyun.com/dav/PlayClock/covers/m1.jpg",
+                                        "https://dav.jianguoyun.com/dav/PlayClock/covers/w1.jpg"}
+    assert reqs[0]["header"]["Authorization"] == "Basic " + base64.b64encode(b"me@example.com:app-pass").decode()
+    assert reqs[0]["filePath"].startswith("wxfile://usr/covers/")
+
+    js.eval("__answer(200, 'm1.jpg')")       # m1 arrives
+    drain(js)
+    js.eval("__answer(404, 'w1.jpg')")       # w1 not uploaded by the desktop yet
+    drain(js)
+    js.eval("__flushTimers()")
+    assert js.eval("renders") == 2                                   # initial watch + one batched re-render
+    out = json.loads(js.eval("""
+      var idx = __page('index'); __app.globalData.summary = S; idx.render(__app.globalData);
+      var lib = __page('library'); lib.render(__app.globalData);
+      var g = __page('game'); g.name = 'Super Mario Odyssey'; g.render(__app.globalData);
+      JSON.stringify({ recent: idx.data.recent.map(function (r) { return [r.game, r.cover]; }),
+                       lib: lib.data.games.map(function (r) { return [r.name, r.cover]; }), game: g.data.cover });
+    """))
+    m = "wxfile://usr/covers/m1.jpg"
+    assert out["game"] == m
+    assert dict(out["lib"]) == {"Warframe 星际战甲": "", "Super Mario Odyssey": m, "塞尔达传说 王国之泪": ""}
+    assert {c for g, c in out["recent"] if g == "Super Mario Odyssey"} == {m}
+
+    js.eval("covers.sync(S, __storage.playclock_dav)")              # cached one isn't fetched again,
+    assert js.eval("__downloads.length") == 0                        # the 404 waits for the retry window
+    js.eval("__require('x.js')('./utils/store.js').clearAccount()")
+    assert js.eval("Object.keys(__files).filter(function (f) { return f.endsWith('.jpg'); }).length") == 0
+    assert js.eval("covers.path('covers/m1.jpg')") == ""
+
+
+def test_concurrency_and_stale_cache_cleanup(js, tmp_path):
+    js.eval("""
+      var covers = __require('x.js')('./utils/covers.js');
+      var acc = { user: 'u', pass: 'p', url: 'https://dav.jianguoyun.com/dav/' };
+      var S = { games: [] };
+      for (var i = 0; i < 10; i++) S.games.push({ name: 'g' + i, cover: 'covers/c' + i + '.jpg' });
+      S.games.push({ name: 'none', cover: null });
+      covers.sync(S, acc);
+    """)
+    assert js.eval("__downloads.length") == js.eval("covers.CONCURRENCY") == 4
+    for _ in range(10):
+        js.eval("__answer(200)")
+        drain(js)
+    assert js.eval("__downloads.length") == 0
+    assert js.eval("covers.path('covers/c9.jpg')") == "wxfile://usr/covers/c9.jpg"
+    js.eval("""
+      delete __files['wxfile://usr/covers/c1.jpg'];              // cleared by WeChat behind our back
+      S.games = S.games.slice(0, 2);                             // c2..c9 no longer used
+      covers.sync(S, acc);
+    """)
+    assert js.eval("__downloads.length") == 1 and js.eval("__downloads[0].url").endswith("/c1.jpg")
+    assert js.eval("__files['wxfile://usr/covers/c5.jpg']") is None
