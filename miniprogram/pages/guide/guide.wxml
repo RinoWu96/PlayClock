@@ -1,0 +1,61 @@
+<view class="page">
+  <view class="intro muted">
+    游戏时长由电脑上的 PlayClock 记录，再通过你自己的坚果云同步到这里。按下面 4 步设置一次即可。
+  </view>
+
+  <view class="card step">
+    <view class="num">1</view>
+    <view class="grow">
+      <view class="step-title">下载电脑端</view>
+      <view class="text">在电脑浏览器里打开下面的地址，下载最新的 <text class="code">PlayClock-…-win64.zip</text>（Windows 10 / 11，64 位）。</view>
+      <view class="link" data-text="{{download}}" bindtap="copy">{{download}}<text class="copy">复制</text></view>
+    </view>
+  </view>
+
+  <view class="card step">
+    <view class="num">2</view>
+    <view class="grow">
+      <view class="step-title">解压并运行</view>
+      <view class="text">把压缩包解压到任意文件夹（不要放在临时目录），运行 <text class="code">PlayClock.exe</text>。不需要安装，记录都保存在旁边的 <text class="code">data</text> 文件夹里，升级时保留它即可。</view>
+      <view class="text">如果 Windows 提示「已保护你的电脑」，点「更多信息 → 仍要运行」。</view>
+      <view class="text">关闭窗口后程序会留在右下角托盘继续记录；在「设置」里可以打开开机自动启动。</view>
+    </view>
+  </view>
+
+  <view class="card step">
+    <view class="num">3</view>
+    <view class="grow">
+      <view class="step-title">开始记录</view>
+      <view class="text"><text class="b">模拟器</text>：在 Ryujinx、yuzu、PCSX2、RPCS3 等模拟器里开始游戏，会自动计时，不用任何操作。</view>
+      <view class="text"><text class="b">以前玩的时长</text>：「设置 → 导入历史时长」，可以从 Steam 和 Ryujinx 导入，重复导入不会重复计算。</view>
+      <view class="text"><text class="b">主机上玩的</text>：「游戏库 → 添加时长」，手动记录 Switch、PS5 等。</view>
+    </view>
+  </view>
+
+  <view class="card step">
+    <view class="num">4</view>
+    <view class="grow">
+      <view class="step-title">开启云同步</view>
+      <view class="text">电脑上打开「设置 → 云同步 → 连接坚果云…」，按提示操作：</view>
+      <view class="text">· 登录坚果云网页版（没有账号可以免费注册）</view>
+      <view class="link" data-text="{{jianguoyun}}" bindtap="copy">{{jianguoyun}}<text class="copy">复制</text></view>
+      <view class="text">· 账户名 → 账户信息 → 安全选项 → 第三方应用管理 → 添加应用，生成一个「应用密码」</view>
+      <view class="text">· 在 PlayClock 里填入坚果云账号和应用密码，点「立即同步」</view>
+      <view class="text">完成后，在小程序「设置」里填同一个账号和应用密码就能看到数据。建议给小程序另外生成一个应用密码，方便单独撤销。</view>
+    </view>
+  </view>
+
+  <view class="section">常见问题</view>
+  <view class="card faq">
+    <view class="q">多久更新一次？</view>
+    <view class="text">正在玩游戏时电脑约每 2 分钟同步一次，平时每 10 分钟一次；在电脑上点「立即同步」可以马上更新。小程序下拉可以刷新。</view>
+    <view class="q">封面没有显示？</view>
+    <view class="text">封面来自电脑端已设置的封面，第一次同步时分批上传，游戏多的话要几次同步才能全部显示，之前先显示首字母。</view>
+    <view class="q">导入的时长为什么不在每日统计里？</view>
+    <view class="text">从 Steam 等平台导入的历史时长没有具体日期，只计入累计和排行。</view>
+    <view class="q">数据安全吗？</view>
+    <view class="text">记录只保存在你的电脑和你自己的坚果云里，不经过任何第三方服务器；小程序只读取，不会修改数据。</view>
+  </view>
+
+  <button class="btn" bindtap="goSetup">去连接坚果云</button>
+</view>

@@ -19,6 +19,14 @@
   </view>
   <view wx:if="{{status}}" class="{{error ? 'err' : 'muted'}} status">{{status}}</view>
 
+  <view class="card row guide" bindtap="openGuide">
+    <view class="grow">
+      <view>电脑端下载和使用说明</view>
+      <view class="faint">还没装电脑上的 PlayClock？从这里开始</view>
+    </view>
+    <view class="faint">›</view>
+  </view>
+
   <view class="section">关于</view>
   <view class="card faint">
     PlayClock 小程序只读取你坚果云里 PlayClock 文件夹中的汇总文件，不修改任何数据。

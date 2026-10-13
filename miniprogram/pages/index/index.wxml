@@ -3,6 +3,7 @@
     <view class="title">欢迎使用 PlayClock</view>
     <view class="muted">连接你的坚果云后，就能在手机上查看电脑、Steam 等平台的游戏时长。</view>
     <button class="btn setup-btn" bindtap="goSetup">连接坚果云</button>
+    <view class="guide-link" bindtap="openGuide">还没装电脑端？查看下载和使用说明 ›</view>
   </view>
 
   <view wx:elif="{{state === 'loading'}}" class="empty">正在读取…</view>

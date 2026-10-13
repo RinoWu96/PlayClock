@@ -43,9 +43,10 @@ var wx = {
     };
   },
   setNavigationBarTitle: function () {}, stopPullDownRefresh: function () {},
-  navigateTo: function () {}, switchTab: function () {}, showModal: function () {}
+  navigateTo: function (o) { __nav.push(o.url); }, switchTab: function (o) { __nav.push(o.url); }, showModal: function () {},
+  setClipboardData: function (o) { __clipboard = o.data; if (o.success) o.success(); }, showToast: function () {}
 };
-var __downloads = [], __files = {}, __timers = [];
+var __downloads = [], __files = {}, __timers = [], __nav = [], __clipboard = null;
 // answer a pending download (the oldest, or the one for `name`) with an HTTP status (200 writes the file)
 function __answer(status, name) {
   var i = name ? __downloads.findIndex(function (d) { return d.url.endsWith("/" + name); }) : 0;
@@ -83,7 +84,7 @@ def js():
         load(ctx, f)
     load(ctx, "app.js")
     ctx.eval('__current="app.js"; __require("app.js")("./app.js"); __app.onLaunch()')
-    for page in ("index", "library", "game", "settings"):
+    for page in ("index", "library", "game", "settings", "guide"):
         rel = f"pages/{page}/{page}.js"
         load(ctx, rel)
         ctx.eval(f'__current="{page}"; __require({json.dumps(rel)})("./{page}.js")')
@@ -232,3 +233,18 @@ def test_concurrency_and_stale_cache_cleanup(js, tmp_path):
     """)
     assert js.eval("__downloads.length") == 1 and js.eval("__downloads[0].url").endswith("/c1.jpg")
     assert js.eval("__files['wxfile://usr/covers/c5.jpg']") is None
+
+
+def test_guide_is_registered_linked_and_copies_the_download_link(js):
+    app_json = json.loads((MP / "app.json").read_text(encoding="utf-8"))
+    assert "pages/guide/guide" in app_json["pages"]
+    out = json.loads(js.eval("""
+      var g = __page('guide');
+      g.copy({ currentTarget: { dataset: { text: g.data.download } } });
+      var s = __page('settings'); s.openGuide();
+      JSON.stringify({ clip: __clipboard, nav: __nav });
+    """))
+    assert out["clip"] == "https://github.com/RinoWu96/PlayClock/releases/latest"
+    assert out["nav"] == ["/pages/guide/guide"]
+    wxml = (MP / "pages/guide/guide.wxml").read_text(encoding="utf-8")
+    assert "{{download}}" in wxml and "连接坚果云" in wxml

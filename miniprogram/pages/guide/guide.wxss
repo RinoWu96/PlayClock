@@ -1,0 +1,20 @@
+.intro { margin: 4rpx 6rpx 24rpx; line-height: 1.7; }
+.step { display: flex; align-items: flex-start; }
+.num {
+  width: 48rpx; height: 48rpx; border-radius: 50%; background: var(--accent); color: #fff;
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 26rpx;
+  flex-shrink: 0; margin-right: 22rpx;
+}
+.step-title { font-size: 32rpx; font-weight: 600; margin: 2rpx 0 12rpx; }
+.text { color: var(--muted); line-height: 1.7; margin-bottom: 10rpx; font-size: 26rpx; }
+.b { color: var(--text); font-weight: 600; }
+.code { color: var(--text); font-family: Menlo, Consolas, monospace; font-size: 24rpx; }
+.link {
+  background: var(--bg); border: 1rpx solid var(--border); border-radius: 14rpx; padding: 16rpx 20rpx;
+  margin: 6rpx 0 14rpx; font-size: 24rpx; color: var(--accent); word-break: break-all;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.copy { color: var(--text); background: var(--card-hover); border-radius: 999rpx; padding: 4rpx 18rpx; margin-left: 16rpx; flex-shrink: 0; }
+.q { font-weight: 600; margin: 8rpx 0 6rpx; }
+.faq .text:last-child { margin-bottom: 0; }
+.btn { margin-top: 12rpx; }

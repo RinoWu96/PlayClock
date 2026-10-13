@@ -38,3 +38,4 @@
 .plat:last-child { margin-bottom: 0; }
 .track { height: 14rpx; border-radius: 7rpx; background: rgba(255, 255, 255, 0.06); margin-top: 10rpx; }
 .fill { height: 14rpx; border-radius: 7rpx; }
+.guide-link { color: var(--accent); margin-top: 32rpx; font-size: 26rpx; }

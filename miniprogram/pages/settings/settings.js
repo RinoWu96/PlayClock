@@ -28,6 +28,8 @@ Page({
       .then(() => this.setData({ busy: false }))
   },
 
+  openGuide() { wx.navigateTo({ url: '/pages/guide/guide' }) },
+
   logout() {
     wx.showModal({
       title: '断开坚果云',

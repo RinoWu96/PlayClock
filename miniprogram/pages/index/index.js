@@ -72,7 +72,8 @@ Page({
     wx.navigateTo({ url: '/pages/game/game?name=' + encodeURIComponent(e.currentTarget.dataset.name) })
   },
 
-  goSetup() { wx.switchTab({ url: '/pages/settings/settings' }) }
+  goSetup() { wx.switchTab({ url: '/pages/settings/settings' }) },
+  openGuide() { wx.navigateTo({ url: '/pages/guide/guide' }) }
 })
 
 function greeting() {
