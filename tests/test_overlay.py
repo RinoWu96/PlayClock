@@ -64,3 +64,30 @@ def test_states_and_painting(qapp, tracker, expect):
     assert img.width() == Overlay.W
     assert o.buttons["add"].isVisible() == (kind == "none") or not o.isVisible()
     o.deleteLater()
+
+
+def test_text_stays_readable_on_cover_colours():
+    from playclock.ui.overlay import ink
+    assert ink(QColor("#f5d76e")).lightness() < 60      # light yellow cover -> dark text
+    assert ink(QColor("#1b3a5c")).lightness() > 200     # dark blue cover -> white text
+
+
+def test_bar_mode_keeps_the_right_edge_and_is_remembered(qapp):
+    from playclock.ui.overlay import Overlay
+    saved = {}
+    c = fake_ctrl(current=Current(1, "Zelda", "Ryujinx", 61.0))
+    c.set_cfg = lambda k, v: saved.__setitem__(k, v)
+    o = Overlay(c)
+    o.move(1000, 50)
+    right = o.x() + o.width()
+    o.set_mode("bar")
+    assert (o.width(), o.height()) == (Overlay.BAR_W, Overlay.BAR_H)
+    assert o.x() + o.width() == right and saved["overlay_mode"] == "bar"
+    for palette in ("cover", "dark"):
+        o.set_palette(palette)
+        assert o.grab().toImage().width() == Overlay.BAR_W
+    assert saved["overlay_theme"] == "dark"
+    o.set_mode("card")
+    assert o.width() == Overlay.W
+    o.deleteLater()
+

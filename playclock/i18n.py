@@ -436,4 +436,12 @@ EN = {
     "点 + 从正在运行的程序里选择": "Press + to pick from running programs",
     "PlayClock 认不出的游戏，选一次之后就会自动计时。": "For games PlayClock can't recognise: pick it once and it's timed automatically from then on.",
     "今天 {t}": "Today {t}",
+    "缩小为横条（右键可切换模式和配色）": "Shrink to a bar (right-click for layout and colours)",
+    "卡片模式": "Card",
+    "横条模式（只显示计时）": "Bar (timer only)",
+    "配色：封面颜色": "Colours: from the cover",
+    "配色：深色": "Colours: dark",
+    "已暂停": "Paused",
+    "不在前台": "Not in front",
+    "未识别游戏": "No game",
 }
