@@ -23,6 +23,7 @@ class EmuGame:
     seconds: float
     last_played: float | None  # epoch seconds
     art: Path | str | None = None  # cover the platform already has: local file or image URL (Steam header)
+    key: str | None = None         # stable game id: "switch:<title id>", "steam:<appid>"
 
 
 @dataclass
@@ -72,15 +73,34 @@ def scan_ryujinx(root: Path) -> list[EmuGame]:
             continue
         secs = parse_timespan(d.get("timespan_played", ""))
         title = (d.get("title") or "").strip()
-        if secs > 0 and title:
-            out.append(EmuGame(title, secs, parse_utc(d.get("last_played_utc"))))
+        folder = meta.parent.parent.name
+        key = f"switch:{folder.lower()}" if re.fullmatch(r"[0-9a-fA-F]{16}", folder) else None
+        if secs > 0 and (title or key):
+            out.append(EmuGame(title, secs, parse_utc(d.get("last_played_utc")), key=key))
+    return out
+
+
+def ryujinx_titles(root: Path) -> dict[str, str]:
+    """Title id key -> the name Ryujinx shows now, for every game it knows (played or not)."""
+    games_dir = root / "games" if (root / "games").is_dir() else root / "portable" / "games"
+    out = {}
+    for meta in games_dir.glob("*/gui/metadata.json"):
+        folder = meta.parent.parent.name
+        if not re.fullmatch(r"[0-9a-fA-F]{16}", folder):
+            continue
+        try:
+            out[f"switch:{folder.lower()}"] = (json.loads(meta.read_text(encoding="utf-8-sig")).get("title") or "").strip()
+        except (OSError, ValueError):
+            continue
     return out
 
 
 def plan_import(db: DB, games: list[EmuGame], emulator: str = "Ryujinx") -> list[PlanRow]:
     merged: dict[str, EmuGame] = {}  # two entries can map to one name (aliases, test builds...)
     for g in games:
-        name = db.resolve(g.title)
+        name = db.canonical(g.title, g.key)  # every language of one game -> one name; garbled titles dropped
+        if name is None:
+            continue
         m = merged.setdefault(name, EmuGame(name, 0.0, None))
         m.seconds += g.seconds
         m.last_played = max(filter(None, (m.last_played, g.last_played)), default=None)

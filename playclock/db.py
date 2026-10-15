@@ -31,6 +31,11 @@ CREATE TABLE IF NOT EXISTS steam_names (
     appid INTEGER PRIMARY KEY,
     name  TEXT NOT NULL     -- looked up online for apps missing from Steam's local cache
 );
+CREATE TABLE IF NOT EXISTS game_keys (
+    key     TEXT PRIMARY KEY,  -- a stable id: "switch:<title id>", "steam:<appid>"
+    game    TEXT NOT NULL,     -- the one name every language / variant of that game is recorded under
+    updated REAL NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS aliases (
     raw     TEXT PRIMARY KEY,  -- name parsed from the window title
     name    TEXT NOT NULL,     -- name it is recorded as
@@ -48,6 +53,13 @@ DATED = "(source IS NULL OR source='manual')"
 
 RENAMED_EMULATORS = {"yuzu 系": "yuzu & forks", "Citra 系 (3DS)": "Citra & forks"}
 RENAMED_GAMES = {"RetroArch（未识别游戏）": "RetroArch (unrecognized game)"}
+
+
+def bad_name(name: str | None) -> bool:
+    """Names that aren't names: empty, Ryujinx's "<Unknown Name>", or bytes misread as text."""
+    name = (name or "").strip()
+    return (not name or name == "<Unknown Name>" or "\ufffd" in name
+            or any(ord(ch) < 32 for ch in name))
 
 
 def new_uid() -> str:
@@ -95,10 +107,38 @@ class DB:
         row = self.con.execute("SELECT name FROM aliases WHERE raw=?", (raw,)).fetchone()
         return row["name"] if row else raw
 
+    def canonical(self, name: str | None, key: str | None = None) -> str | None:
+        """The name to record a game under. With a stable `key` (Switch title id, Steam appid) every name the
+        game shows up with — Simplified, Traditional, English… — is merged into the first one seen (or the one
+        the user renamed it to). None when there is no usable name at all."""
+        name = (name or "").strip()
+        row = self.con.execute("SELECT game FROM game_keys WHERE key=?", (key,)).fetchone() if key else None
+        if row:
+            canon = self.resolve(row["game"])
+            if not bad_name(name) and name != canon and self.resolve(name) != canon:
+                self.rename_game(name, canon)  # merge what was recorded under the other name, and alias it
+            return canon
+        if bad_name(name):
+            # only an existing alias (e.g. the user renamed the garbled title once) can name it
+            alias = self.con.execute("SELECT name FROM aliases WHERE raw=?", (name,)).fetchone() if name else None
+            if not alias:
+                return None
+            canon = alias["name"]
+        else:
+            canon = self.resolve(name)
+        if key:
+            with self.con:
+                # automatic choices are stamped -first_seen, so across devices the earliest one wins, and any
+                # explicit rename (stamped with a positive time in rename_game) beats every automatic choice
+                self.con.execute("INSERT OR IGNORE INTO game_keys(key, game, updated) VALUES(?, ?, ?)",
+                                 (key, canon, -time.time()))
+        return canon
+
     def rename_game(self, old: str, new: str) -> None:
         """Rename/merge: existing sessions move to `new`, and future detections of `old` too."""
         now = time.time()
         with self.con:
+            self.con.execute("UPDATE game_keys SET game=?, updated=? WHERE game=?", (new, now, old))
             self.con.execute("UPDATE sessions SET game=?, updated=? WHERE game=?", (new, now, old))
             self.con.execute("UPDATE aliases SET name=?, updated=? WHERE name=?", (new, now, old))
             self.con.execute("INSERT OR REPLACE INTO aliases(raw, name, updated) VALUES(?, ?, ?)", (old, new, now))

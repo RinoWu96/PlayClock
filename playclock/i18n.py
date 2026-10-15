@@ -444,4 +444,6 @@ EN = {
     "已暂停": "Paused",
     "不在前台": "Not in front",
     "未识别游戏": "No game",
+    "已把 {n} 个重复的游戏名（不同语言）合并到一起。": ("Merged {n} duplicate game name (another language) into one.",
+                                         "Merged {n} duplicate game names (other languages) into one."),
 }
