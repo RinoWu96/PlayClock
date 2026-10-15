@@ -148,7 +148,14 @@ def match_emulator(comm: str, args: list[str]):
     return None
 
 
-LOADED = re.compile(r"Application Loaded: (?P<game>.+?)(?: v\d[\w.\-]*)? \[[0-9a-fA-F]{16}\]")
+LOADED = re.compile(r"Application Loaded: (?P<game>.+?)(?: v\d[\w.\-]*)? \[(?P<tid>[0-9a-fA-F]{16})\]")
+TITLE_ID = re.compile(r"(?<![0-9a-fA-F])(01[0-9a-fA-F]{14})(?![0-9a-fA-F])")  # Switch title id in a ROM name
+
+
+def bad_name(name: str | None) -> bool:
+    """Not a name: empty, Ryujinx's "<Unknown Name>", or bytes misread as text (same as the Windows app)."""
+    name = (name or "").strip()
+    return not name or name == "<Unknown Name>" or "\ufffd" in name or any(ord(ch) < 32 for ch in name)
 ENDED = re.compile(r"= TerminationRequested|Stopping audio processor")
 
 
@@ -161,6 +168,7 @@ class RyujinxLog:
         self.offset = 0
         self.partial = b""
         self.game: str | None = None
+        self.key: str | None = None
         self.paused = False
 
     def poll(self) -> tuple[str | None, bool]:
@@ -170,7 +178,7 @@ class RyujinxLog:
         newest = max(logs, key=lambda f: f.stat().st_mtime)
         size = newest.stat().st_size
         if newest != self.file or size < self.offset:
-            self.file, self.offset, self.partial, self.game, self.paused = newest, 0, b"", None, False
+            self.file, self.offset, self.partial, self.game, self.paused, self.key = newest, 0, b"", None, False, None
         if size > self.offset:
             with open(newest, "rb") as f:
                 f.seek(self.offset)
@@ -183,12 +191,13 @@ class RyujinxLog:
                 m = LOADED.search(line)
                 if m:
                     self.game, self.paused = m.group("game").strip(), False
+                    self.key = f"switch:{m.group('tid').lower()}"
                 elif "Emulation was paused" in line:
                     self.paused = True
                 elif "Emulation was resumed" in line:
                     self.paused = False
                 elif self.game and ENDED.search(line):
-                    self.game, self.paused = None, False
+                    self.game, self.paused, self.key = None, False, None
         return self.game, self.paused
 
 
@@ -207,8 +216,9 @@ class Detector:
         self.seen: list[tuple[str, int, list[str]]] = []
         self.paused: str | None = None
 
-    def detect(self, procs=None) -> tuple[str, str] | None:
-        """(emulator, game) being played right now, or None (also None while a Ryujinx game is paused)."""
+    def detect(self, procs=None) -> tuple[str, str, str | None] | None:
+        """(emulator, game, game id) being played right now, or None (also None while a Ryujinx game is paused).
+        The game id ("switch:<title id>") lets every language of one game end up under one name."""
         self.seen, self.paused = [], None
         found = None
         for pid, comm, args in (processes() if procs is None else procs):
@@ -218,6 +228,8 @@ class Detector:
             name, _, exts = entry
             self.seen.append((name, pid, args))
             game = game_from_args(args, exts)
+            tid = TITLE_ID.search(" ".join(args[1:])) if name in ("Ryujinx", "yuzu & forks") else None
+            key = f"switch:{tid.group(1).lower()}" if tid else None
             if name == "Ryujinx":
                 dirs = [d / "Logs" for d in ryujinx_dirs(args)]
                 reader = self.ryujinx_logs.setdefault(str(dirs), RyujinxLog(dirs))
@@ -225,9 +237,9 @@ class Detector:
                 if logged and paused:
                     self.paused = logged
                     continue
-                game = logged or game
-            if game and found is None:
-                found = (name, game)
+                game, key = (logged, reader.key) if logged else (game, key)
+            if (game or key) and found is None:
+                found = (name, game, key)
         return found
 
 
@@ -243,12 +255,24 @@ class Store:
         data = read_json(path, {})
         self.sessions: list[dict] = data.get("sessions", [])
         self.tombstones: list[dict] = data.get("tombstones", [])
+        self.keys: dict[str, dict] = data.get("keys", {})   # game id -> {"game", "updated"}
         self.last_upload: str = data.get("last_upload", "")
         self.last_sync: float = data.get("last_sync", 0.0)
 
     def save(self) -> None:
-        write_json(self.path, {"sessions": self.sessions, "tombstones": self.tombstones,
+        write_json(self.path, {"sessions": self.sessions, "tombstones": self.tombstones, "keys": self.keys,
                                "last_upload": self.last_upload, "last_sync": self.last_sync})
+
+    def name_for(self, game: str | None, key: str | None) -> str | None:
+        """One name per game id: the first one seen here (stamped -time, so on the PC an earlier or user-chosen
+        name wins and this one becomes an alias). Garbled names are never used."""
+        if key and key in self.keys:
+            return self.keys[key]["game"]
+        if bad_name(game):
+            return None
+        if key:
+            self.keys[key] = {"game": game.strip(), "updated": -time.time()}
+        return game.strip()
 
     def start(self, game: str, emulator: str, now: float) -> dict:
         s = {"uid": uuid.uuid4().hex, "game": game, "emulator": emulator, "start": now, "end": now,
@@ -268,9 +292,16 @@ class Store:
         return sum(s["seconds"] for s in self.sessions
                    if s["game"] == game and s["emulator"] == emulator and s["source"] is None)
 
-    def import_totals(self, emulator: str, source: str, totals: dict[str, tuple[float, float | None]]) -> None:
-        """An emulator's own play-time totals: only what wasn't tracked here is added, one row per game whose
-        uid matches the Windows app's (sha1 of "<device>|<source>|<game>"), so re-importing just updates it."""
+    def import_totals(self, emulator: str, source: str, entries) -> None:
+        """An emulator's own play-time totals [(title, seconds, last played, game id)]: only what wasn't tracked
+        here is added, one row per game whose uid matches the Windows app's (sha1 of "<device>|<source>|<game>"),
+        so re-importing just updates it."""
+        totals: dict[str, tuple[float, float | None]] = {}
+        for title, secs, last, key in entries:
+            game = self.name_for(title, key)
+            if game:
+                prev, prev_last = totals.get(game, (0.0, None))
+                totals[game] = (prev + secs, max(filter(None, (prev_last, last)), default=None))
         for game, (total, last) in totals.items():
             uid = hashlib.sha1(f"{self.device}|{source}|{game}".encode()).hexdigest()
             add = max(0.0, total - self.tracked(game, emulator))
@@ -287,7 +318,8 @@ class Store:
 
     def payload(self, name: str) -> dict:
         return {"format": FORMAT, "device": self.device, "name": name, "sessions": self.sessions,
-                "aliases": [], "tombstones": self.tombstones}
+                "aliases": [], "tombstones": self.tombstones,
+                "keys": [{"key": k, "game": v["game"], "updated": v["updated"]} for k, v in sorted(self.keys.items())]}
 
 
 class Tracker:
@@ -299,8 +331,11 @@ class Tracker:
         self.last_tick: float | None = None
         self.saved = 0.0
 
-    def tick(self, now: float, found: tuple[str, str] | None) -> bool:
-        """Advance; returns True when a session ended (a good moment to sync)."""
+    def tick(self, now: float, found: tuple | None) -> bool:
+        """Advance with (emulator, game[, game id]) or None; returns True when a session ended (sync then)."""
+        if found:
+            game = self.store.name_for(found[1], found[2] if len(found) > 2 else None)
+            found = (found[0], game) if game else None
         dt = 0.0 if self.last_tick is None else now - self.last_tick
         self.last_tick = now
         continuous = 0 < dt <= max(3 * INTERVAL, 30)  # a long gap = the Deck was asleep
@@ -332,15 +367,17 @@ class Tracker:
         return True
 
 
-def ryujinx_totals() -> dict[str, tuple[float, float | None]]:
-    """Ryujinx's own per-game play time (games/<titleid>/gui/metadata.json)."""
-    out: dict[str, tuple[float, float | None]] = {}
+def ryujinx_totals() -> list[tuple[str, float, float | None, str | None]]:
+    """Ryujinx's own per-game play time (games/<titleid>/gui/metadata.json): (title, seconds, last, game id)."""
+    out: list[tuple[str, float, float | None, str | None]] = []
     for root in ryujinx_dirs():
         for meta in root.glob("games/*/gui/metadata.json"):
             d = read_json(meta, {})
             m = re.fullmatch(r"(?:(\d+)\.)?(\d+):(\d+):(\d+)(?:\.\d+)?", str(d.get("timespan_played", "")).strip())
             title = (d.get("title") or "").strip()
-            if not m or not title:
+            folder = meta.parent.parent.name
+            key = f"switch:{folder.lower()}" if re.fullmatch(r"[0-9a-fA-F]{16}", folder) else None
+            if not m or not (title or key):
                 continue
             days, h, mi, s = (int(x or 0) for x in m.groups())
             secs = float(((days * 24 + h) * 60 + mi) * 60 + s)
@@ -349,8 +386,7 @@ def ryujinx_totals() -> dict[str, tuple[float, float | None]]:
             if lm:
                 last = float(calendar.timegm(tuple(map(int, lm.groups())) + (0, 0, 0)))
             if secs > 0:
-                prev_secs, prev_last = out.get(title, (0.0, None))
-                out[title] = (prev_secs + secs, max(filter(None, (prev_last, last)), default=None))
+                out.append((title, secs, last, key))
     return out
 
 
@@ -457,8 +493,8 @@ class Agent:
             found = self.detector.detect()
             current = self.tracker.current
             ended = self.tracker.tick(now, found)
-            if found and (current is None or current.get("game") != found[1]):
-                log(f"playing {found[1]} ({found[0]})")
+            if self.tracker.current and self.tracker.current is not current:
+                log(f"playing {self.tracker.current['game']} ({self.tracker.current['emulator']})")
             if ended or woke or now - last_sync >= SYNC_EVERY:
                 log(self.sync())
                 last_sync = now
@@ -485,7 +521,7 @@ def cmd_status(agent: Agent) -> None:
     found = agent.detector.detect()
     print(f"PlayClock Deck {VERSION} · device {agent.store.device} ({agent.name})")
     print("emulators running:", ", ".join(sorted({n for n, _, _ in agent.detector.seen})) or "none")
-    print("playing now:", f"{found[1]} ({found[0]})" if found else
+    print("playing now:", f"{found[1] or found[2]} ({found[0]})" if found else
           (f"{agent.detector.paused} (paused)" if agent.detector.paused else "nothing"))
     tracked = [s for s in agent.store.sessions if s["source"] is None]
     print(f"sessions recorded: {len(tracked)}, {sum(s['seconds'] for s in tracked) / 3600:.1f} h")
@@ -503,7 +539,7 @@ def cmd_doctor(agent: Agent) -> None:
         logs = sorted(root.glob("Logs/*.log"), key=lambda f: f.stat().st_mtime)
         print(f"Ryujinx data {root}: {len(list(root.glob('games/*/gui/metadata.json')))} games with metadata,"
               f" newest log: {logs[-1].name if logs else 'none'}")
-    print("Ryujinx totals:", {k: round(v[0] / 3600, 2) for k, v in ryujinx_totals().items()} or "none")
+    print("Ryujinx totals:", {t or k: round(sec / 3600, 2) for t, sec, _l, k in ryujinx_totals()} or "none")
     print("emulator-like processes:")
     hint = re.compile("|".join(p for _, p, _ in EMULATORS) + r"|emu|appimage", re.I)
     for pid, comm, args in processes():

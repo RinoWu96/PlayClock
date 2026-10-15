@@ -177,6 +177,7 @@ SQLite 文件 `data/playtime.db`。
 - **记录格式**：每条会话的字段和 PlayClock 完全相同（`uid`、`game`、`emulator`、`start`、`end`、`seconds`、`source`、`device`、`updated`）；模拟器名用 Windows 规则里的名字，所以电脑端能把它对应到平台（比如 melonDS 对应 NDS）。
 - **Ryujinx 导入**：读 `games/*/gui/metadata.json`，导入量 = Ryujinx 自己记录的总时长 − 本机计时的时长；记录 ID 是 `sha1("<设备ID>|ryujinx|<游戏名>")`，和 Windows 版 `db.replace_import` 的算法一致。
 - **同步**：只上传、不下载，用 `MKCOL` 和 `PUT` 写 `PlayClock/devices/<设备ID>.json.gz`，编码和 Windows 版 `sync.encode` 逐字节相同。内容没变就不上传。游戏结束、唤醒后，以及每 10 分钟各同步一次。
+- **游戏 ID**：Ryujinx 从日志拿 Title ID，其他 Switch 模拟器从 ROM 文件名里的 `[01…]` 拿。同一个 ID 在这台 Deck 上只用第一次见到的名字（时间戳记成负数），乱码和 `<Unknown Name>` 不算名字；同步文件里带上 `keys`，电脑上已有的名字或用户改过的名字优先，Deck 的名字会变成它的别名。
 - **测试**：`tests/test_deck.py` 覆盖了各模拟器 EmuDeck 风格的启动命令、Ryujinx 日志、休眠和短会话；和 PC 版的契约测试（同步文件被真实的 `merge_payload` 合并、导入记录 ID 一致）；以及经本机 WebDAV 服务器、由 PC 版 `run_sync` 下载合并的完整流程。
 
 ## 6. 后台占用

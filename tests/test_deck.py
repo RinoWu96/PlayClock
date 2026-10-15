@@ -36,7 +36,7 @@ ROMS = "/home/deck/Emulation/roms"
 ])
 def test_games_from_emudeck_style_command_lines(comm, args, expect):
     d = deck.Detector()
-    assert d.detect([(100, comm, args)]) == expect
+    assert d.detect([(100, comm, args)])[:2] == expect
 
 
 def test_launch_scripts_and_idle_emulators_are_not_games():
@@ -56,7 +56,7 @@ def test_ryujinx_name_and_pause_come_from_its_log(tmp_path, monkeypatch):
                    "[01008cf01baac000] [64-bit]\n", encoding="utf-8")
     proc = [(7, "Ryujinx", ["/tmp/.mount_x/usr/bin/Ryujinx", f"{ROMS}/switch/zelda-eow.nsp"])]
     d = deck.Detector()
-    assert d.detect(proc) == ("Ryujinx", "薩爾達傳說 智慧的再現")
+    assert d.detect(proc) == ("Ryujinx", "薩爾達傳說 智慧的再現", "switch:01008cf01baac000")
     with open(log, "a", encoding="utf-8") as f:
         f.write("00:07:41.486 |I| GUI.WindowThread Emulation Pause: Emulation was paused\n")
     assert d.detect(proc) is None and d.paused == "薩爾達傳說 智慧的再現"
@@ -86,7 +86,7 @@ def test_payload_merges_into_the_windows_app(tmp_path):
     for s in range(0, 400, 10):
         t.tick(1_800_000_000 + s, ("melonDS", "Pokemon Platinum"))
     t.tick(1_800_000_400, None)
-    store.import_totals("Ryujinx", "ryujinx", {"Zelda": (7200.0, 1_800_000_500.0)})
+    store.import_totals("Ryujinx", "ryujinx", [("Zelda", 7200.0, 1_800_000_500.0, None)])
     blob = deck.encode(store.payload("Steam Deck"))
     assert blob == encode(store.payload("Steam Deck"))          # byte-identical to the PC encoder
     pc = DB(tmp_path / "pc.db", device="PC")
@@ -100,14 +100,14 @@ def test_payload_merges_into_the_windows_app(tmp_path):
 def test_ryujinx_import_ids_match_the_windows_app(tmp_path):
     """Same uid as PlayClock's own Ryujinx import for that device, so the two never double count."""
     store = deck.Store(tmp_path / "s.json", "deck1")
-    store.import_totals("Ryujinx", "ryujinx", {"Zelda": (3600.0, 100.0)})
+    store.import_totals("Ryujinx", "ryujinx", [("Zelda", 3600.0, 100.0, None)])
     pc_like = DB(tmp_path / "x.db", device="deck1")
     apply_import(pc_like, plan_import(pc_like, [EmuGame("Zelda", 3600, 100)], "Ryujinx"), "Ryujinx", "ryujinx")
     assert store.sessions[0]["uid"] == pc_like.con.execute("SELECT uid FROM sessions").fetchone()[0]
     # tracked play on the Deck shrinks what the import adds
     store.sessions.append({"uid": "u1", "game": "Zelda", "emulator": "Ryujinx", "start": 0, "end": 600,
                            "seconds": 600.0, "source": None, "device": "deck1", "updated": 1})
-    store.import_totals("Ryujinx", "ryujinx", {"Zelda": (3600.0, 100.0)})
+    store.import_totals("Ryujinx", "ryujinx", [("Zelda", 3600.0, 100.0, None)])
     assert sum(s["seconds"] for s in store.sessions) == 3600
 
 
@@ -117,7 +117,7 @@ def test_ryujinx_totals_from_metadata(tmp_path, monkeypatch):
     meta.parent.mkdir(parents=True)
     meta.write_text(json.dumps({"title": "Zelda", "timespan_played": "07:28:14.62",
                                 "last_played_utc": "2026-10-12T10:43:00Z"}), encoding="utf-8")
-    assert deck.ryujinx_totals() == {"Zelda": (26894.0, 1791801780.0)}
+    assert deck.ryujinx_totals() == [("Zelda", 26894.0, 1791801780.0, "switch:01008cf01baac000")]
 
 
 @pytest.fixture
@@ -156,3 +156,21 @@ def test_deck_upload_reaches_the_windows_app(tmp_path, dav_server):
     for blob in blobs.values():
         merge_payload(pc, decode(blob))
     assert {r["game"]: r["total"] for r in pc.game_stats()} == {"Monster Hunter Freedom Unite": 190.0}
+
+
+def test_deck_names_in_another_language_merge_into_the_pc_name(tmp_path):
+    """The Deck's Ryujinx runs in English; the PC already calls the game by its Chinese name."""
+    pc = DB(tmp_path / "pc.db", device="PC")
+    pc.canonical("塞尔达传说 智慧的再现", "switch:01008cf01baac000")
+    store = deck.Store(tmp_path / "s.json", "deck1")
+    t = deck.Tracker(store)
+    found = ("Ryujinx", "The Legend of Zelda: Echoes of Wisdom", "switch:01008cf01baac000")
+    for s in range(0, 130, 10):
+        t.tick(1_800_000_000 + s, found)
+    t.tick(1_800_000_130, ("Ryujinx", "<Unknown Name>", "switch:01008cf01baac000"))   # same id, no name: same game
+    t.tick(1_800_000_140, None)
+    store.import_totals("Ryujinx", "ryujinx", [("�garbled", 900.0, 1.0, "switch:01007ef00011e000")])
+    assert [s["game"] for s in store.sessions] == ["The Legend of Zelda: Echoes of Wisdom"]   # garbled id: skipped
+    merge_payload(pc, decode(deck.encode(store.payload("Steam Deck"))))
+    assert pc.games() == ["塞尔达传说 智慧的再现"] and pc.game_detail("塞尔达传说 智慧的再现")["total"] == 130
+
