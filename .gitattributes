@@ -1,0 +1,2 @@
+deck/*.sh text eol=lf
+deck/*.py text eol=lf

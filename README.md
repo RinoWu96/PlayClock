@@ -22,6 +22,7 @@
 | `playclock/tracker.py` | 轮询、选中当前游戏、累计秒数（睡眠间隙不计、短会话丢弃、短中断续接） |
 | `playclock/emulog.py` | 读 Ryujinx 自己的日志：1.3+ 标题不带游戏名时用它识别游戏，暂停不计时 |
 | `playclock/ui/overlay.py` | 游戏浮窗：置顶、不抢焦点、按封面配色，Ctrl+Alt+P 显示 / 隐藏，未识别时可以直接选择游戏 |
+| `deck/` | Steam Deck / SteamOS 端：后台记录模拟器时长并同步到坚果云（只用标准库，systemd 用户服务），见 `deck/README.md` |
 | `playclock/db.py` | 会话、别名（重命名/合并）、封面元数据、各类统计查询 |
 | `playclock/i18n.py` | 界面中英文：源文本是中文，`EN` 表是英文；`tests/test_i18n.py` 会检查漏翻 |
 | `playclock/covers.py` | SteamGridDB 客户端（用户自己的 API Key，QNetworkAccessManager 异步） |

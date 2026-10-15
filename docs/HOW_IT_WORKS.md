@@ -152,6 +152,17 @@ SQLite 文件 `data/playtime.db`。
   - 小程序（`miniprogram/utils/covers.js`）用 `wx.downloadFile`（带 Basic 认证）把缩略图下载到 `wx.env.USER_DATA_PATH/covers/`，同时最多 4 个；下载失败的 5 分钟后重试；不再用到的缓存文件会删除。没下载到之前显示首字母头像。
   - 同步只会写 `devices/<本机>.json.gz`、`summary.json` 和 `covers/*`，不会删除或改动 `PlayClock` 文件夹里的其他文件。
 
+## 5a. Steam Deck 端（`deck/playclock_deck.py`）
+
+单个 Python 文件，只用标准库，作为 systemd 用户服务运行，没有界面。安装和使用见 `deck/README.md`。
+
+- **识别**：每 10 秒扫描一次 `/proc` 里当前用户的进程，按进程名或可执行文件名匹配模拟器（只看这两项、不看参数，所以 EmuDeck 的启动脚本 `bash …/launchers/xxx.sh` 不会被当成模拟器）。游戏名取启动参数里最后一个扩展名对得上的 ROM 路径，再去掉 `(…)`、`[…]` 标签和末尾的版本号；RPCS3 的 `…/<游戏目录>/USRDIR/EBOOT.BIN` 取游戏目录名。Ryujinx 改读 `~/.config/Ryujinx/Logs`（或 AppImage 旁边的 `portable/Logs`）里最新的日志，规则和 Windows 版的 `emulog.py` 相同，暂停期间不计时。
+- **计时**：规则和 Windows 版相同。两次检查之间超过 max(3×间隔, 30 秒) 视为休眠，不计入；短于 60 秒的会话丢弃并留下删除标记；180 秒内重新打开同一个游戏，接着上一次会话计时。游戏进行中每 60 秒写一次本机文件。
+- **记录格式**：每条会话的字段和 PlayClock 完全相同（`uid`、`game`、`emulator`、`start`、`end`、`seconds`、`source`、`device`、`updated`）；模拟器名用 Windows 规则里的名字，所以电脑端能把它对应到平台（比如 melonDS 对应 NDS）。
+- **Ryujinx 导入**：读 `games/*/gui/metadata.json`，导入量 = Ryujinx 自己记录的总时长 − 本机计时的时长；记录 ID 是 `sha1("<设备ID>|ryujinx|<游戏名>")`，和 Windows 版 `db.replace_import` 的算法一致。
+- **同步**：只上传、不下载，用 `MKCOL` 和 `PUT` 写 `PlayClock/devices/<设备ID>.json.gz`，编码和 Windows 版 `sync.encode` 逐字节相同。内容没变就不上传。游戏结束、唤醒后，以及每 10 分钟各同步一次。
+- **测试**：`tests/test_deck.py` 覆盖了各模拟器 EmuDeck 风格的启动命令、Ryujinx 日志、休眠和短会话；和 PC 版的契约测试（同步文件被真实的 `merge_payload` 合并、导入记录 ID 一致）；以及经本机 WebDAV 服务器、由 PC 版 `run_sync` 下载合并的完整流程。
+
 ## 6. 后台占用
 
 - 窗口只在打开时存在；关闭后整个销毁，同时清空封面缓存，并调用 `SetProcessWorkingSetSize(-1, -1)` 让系统换出空闲内存。

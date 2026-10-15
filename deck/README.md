@@ -1,0 +1,45 @@
+# PlayClock · Steam Deck 端
+
+Steam Deck（SteamOS）上的后台记录程序：自动记录模拟器游戏时长，同步到你自己的坚果云。在电脑上的 PlayClock 里会显示为「其他设备」，统计和游戏库都会合在一起。
+
+- **没有界面，只负责记录**。查看时长请用电脑上的 PlayClock。
+- **游戏模式、桌面模式下都在后台运行**。它是用户级的 systemd 服务，开机自动启动，SteamOS 更新后也不会消失，安装也不需要 root 权限。
+- **休眠不计时**：Deck 休眠时程序会被冻结；唤醒后发现两次检查之间隔了很久，这段时间就不计入，并且马上同步一次。
+- **Ryujinx 暂停不计时**：从 Ryujinx 自己的日志里读出游戏名和暂停状态，和 Windows 版的做法一样。
+- **导入 Ryujinx 自己记录的时长**：安装之前玩的时间也会算进来，只补差额，和电脑上的 Ryujinx 时长分开计算。
+- **只用到 Python 标准库**：SteamOS 自带 Python，不用安装任何东西。
+
+## 支持的模拟器
+Ryujinx、yuzu 系（citron / eden / sudachi…）、Citra 系（Azahar / Lime3DS）、Dolphin、PCSX2、DuckStation、PPSSPP、RPCS3、Cemu、Vita3K、melonDS、mGBA、Flycast、shadPS4、xemu、RetroArch（EmuDeck 的 AppImage 和 Flatpak 版本都能识别）。
+
+识别方法：
+- 游戏名取自模拟器启动命令里的 ROM 文件名，会自动去掉 `(USA)`、`[v0]` 之类的标签。
+- Ryujinx 的游戏名从它自己的日志里读。
+- 和电脑上名字不一样的游戏，在 PlayClock 里用「重命名 / 合并」统一成一个名字即可，以后的记录也会自动归到一起。
+
+## 安装（在 Deck 的桌面模式里）
+1. 先准备好坚果云的**应用密码**：在坚果云桌面客户端的「设置 → 第三方应用管理」里生成。不能用登录密码。
+2. 打开 **Konsole**，粘贴运行：
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/RinoWu96/PlayClock/main/deck/install.sh | bash
+   ```
+3. 按提示输入坚果云账号、应用密码和设备名称（默认是主机名）。连接成功后它就会在后台运行。
+
+还在测试的版本用这条命令安装（来自 `feature/deck` 分支）：
+```bash
+curl -fsSL https://raw.githubusercontent.com/RinoWu96/PlayClock/feature/deck/deck/install.sh | PLAYCLOCK_BRANCH=feature/deck bash
+```
+
+## 常用命令
+```bash
+python3 ~/.local/share/playclock-deck/playclock_deck.py status   # 现在在玩什么、记录了多少、上次同步
+python3 ~/.local/share/playclock-deck/playclock_deck.py doctor   # 自检：模拟器进程、Ryujinx 目录、Python 版本
+python3 ~/.local/share/playclock-deck/playclock_deck.py sync     # 立即同步
+journalctl --user -u playclock-deck -f                           # 运行日志
+bash ~/.local/share/playclock-deck/uninstall.sh                  # 卸载（可以选择是否保留本地记录）
+```
+
+## 数据保存在哪里
+- 设置：`~/.config/playclock/config.json`，权限是 600，只有你的用户能读。里面有坚果云的应用密码，它可以随时在坚果云里撤销。
+- 本机记录：`~/.local/share/playclock/sessions.json`。
+- 云端：坚果云里的 `PlayClock/devices/<设备ID>.json.gz`，只有这台 Deck 会写这个文件。

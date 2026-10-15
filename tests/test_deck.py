@@ -1,0 +1,158 @@
+"""The Steam Deck agent (deck/playclock_deck.py) and its contract with the Windows app's sync format."""
+import importlib.util
+import json
+import threading
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parent.parent
+spec = importlib.util.spec_from_file_location("playclock_deck", ROOT / "deck" / "playclock_deck.py")
+deck = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(deck)
+
+from playclock.db import DB  # noqa: E402
+from playclock.importers import EmuGame, apply_import, plan_import  # noqa: E402
+from playclock.rules import DEFAULT_RULES, Rule, platform_map  # noqa: E402
+from playclock.sync import decode, encode, merge_payload, run_sync, WebDAV  # noqa: E402
+
+ROMS = "/home/deck/Emulation/roms"
+
+
+@pytest.mark.parametrize("comm, args, expect", [
+    ("dolphin-emu", ["/app/bin/dolphin-emu", "-b", "-e", f"{ROMS}/gc/Super Smash Bros. Melee (USA) (En,Ja) (Rev 2).rvz"],
+     ("Dolphin", "Super Smash Bros. Melee")),
+    ("duckstation-qt", ["/app/bin/duckstation-qt", "-batch", "-fullscreen", f"{ROMS}/psx/Final Fantasy VII (USA) (Disc 1).chd"],
+     ("DuckStation", "Final Fantasy VII")),
+    ("Ryujinx", ["/tmp/.mount_ryujiAbC/usr/bin/Ryujinx", "--fullscreen", f"{ROMS}/switch/Super Mario Odyssey [0100000000010000][v0].nsp"],
+     ("Ryujinx", "Super Mario Odyssey")),
+    ("pcsx2-qt", ["/app/bin/pcsx2-qt", "-fullscreen", "-nogui", "--", f"{ROMS}/ps2/Shadow of the Colossus (USA).chd"],
+     ("PCSX2", "Shadow of the Colossus")),
+    ("retroarch", ["/app/bin/retroarch", "-L", "/home/deck/.var/app/org.libretro.RetroArch/cores/snes9x_libretro.so",
+                   f"{ROMS}/snes/Chrono Trigger (USA).sfc"], ("RetroArch", "Chrono Trigger")),
+    ("rpcs3", ["/tmp/.mount_rpcs3/usr/bin/rpcs3", "--no-gui", "/home/deck/Emulation/storage/rpcs3/dev_hdd0/game/BLUS30443/USRDIR/EBOOT.BIN"],
+     ("RPCS3", "BLUS30443")),
+    ("melonDS", ["/app/bin/melonDS", f"{ROMS}/nds/Pokemon - Platinum Version (USA).nds"], ("melonDS", "Pokemon - Platinum Version")),
+])
+def test_games_from_emudeck_style_command_lines(comm, args, expect):
+    d = deck.Detector()
+    assert d.detect([(100, comm, args)]) == expect
+
+
+def test_launch_scripts_and_idle_emulators_are_not_games():
+    d = deck.Detector()
+    script = (1, "bash", ["/bin/bash", "/home/deck/Emulation/tools/launchers/dolphin-emu.sh", f"{ROMS}/gc/Melee.rvz"])
+    idle = (2, "dolphin-emu", ["/app/bin/dolphin-emu"])
+    assert d.detect([script, idle]) is None
+    assert [name for name, _, _ in d.seen] == ["Dolphin"]
+
+
+def test_ryujinx_name_and_pause_come_from_its_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(deck, "HOME", tmp_path)
+    logs = tmp_path / ".config" / "Ryujinx" / "Logs"
+    logs.mkdir(parents=True)
+    log = logs / "Ryujinx_1.3.3_2026-10-15_20-00-00.log"
+    log.write_text("00:00:04.385 |I| Loader Start: Application Loaded: 薩爾達傳說 智慧的再現 v1.0.0 "
+                   "[01008cf01baac000] [64-bit]\n", encoding="utf-8")
+    proc = [(7, "Ryujinx", ["/tmp/.mount_x/usr/bin/Ryujinx", f"{ROMS}/switch/zelda-eow.nsp"])]
+    d = deck.Detector()
+    assert d.detect(proc) == ("Ryujinx", "薩爾達傳說 智慧的再現")
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("00:07:41.486 |I| GUI.WindowThread Emulation Pause: Emulation was paused\n")
+    assert d.detect(proc) is None and d.paused == "薩爾達傳說 智慧的再現"
+
+
+def test_tracker_skips_sleep_drops_short_and_resumes(tmp_path):
+    store = deck.Store(tmp_path / "s.json", "deck1")
+    t = deck.Tracker(store)
+    game = ("melonDS", "Pokemon Platinum")
+    for s in range(0, 130, 10):
+        t.tick(s, game)
+    assert t.current["seconds"] == 120
+    t.tick(130 + 3600, game)              # the Deck slept an hour: not counted, a new session starts
+    t.tick(3740, game)
+    t.tick(3750, None)                    # closed after 10 s: too short, dropped with a tombstone
+    assert [s["seconds"] for s in store.sessions] == [120] and len(store.tombstones) == 1
+    t.tick(3760, game)                    # reopened, but the last kept session ended long ago: a new one
+    t.tick(3770, game)
+    assert len(store.sessions) == 2
+    reloaded = deck.Store(tmp_path / "s.json", "deck1")
+    assert len(reloaded.sessions) == 2   # saved to disk
+
+
+def test_payload_merges_into_the_windows_app(tmp_path):
+    store = deck.Store(tmp_path / "s.json", "deck1")
+    t = deck.Tracker(store)
+    for s in range(0, 400, 10):
+        t.tick(1_800_000_000 + s, ("melonDS", "Pokemon Platinum"))
+    t.tick(1_800_000_400, None)
+    store.import_totals("Ryujinx", "ryujinx", {"Zelda": (7200.0, 1_800_000_500.0)})
+    blob = deck.encode(store.payload("Steam Deck"))
+    assert blob == encode(store.payload("Steam Deck"))          # byte-identical to the PC encoder
+    pc = DB(tmp_path / "pc.db", device="PC")
+    assert merge_payload(pc, decode(blob)) == 2
+    totals = {r["game"]: r["total"] for r in pc.game_stats()}
+    assert totals == {"Pokemon Platinum": 390.0, "Zelda": 7200.0}
+    rules = [Rule.from_dict(d) for d in DEFAULT_RULES]
+    assert platform_map(rules)["melonDS"] == "NDS"              # PC shows it under NDS
+
+
+def test_ryujinx_import_ids_match_the_windows_app(tmp_path):
+    """Same uid as PlayClock's own Ryujinx import for that device, so the two never double count."""
+    store = deck.Store(tmp_path / "s.json", "deck1")
+    store.import_totals("Ryujinx", "ryujinx", {"Zelda": (3600.0, 100.0)})
+    pc_like = DB(tmp_path / "x.db", device="deck1")
+    apply_import(pc_like, plan_import(pc_like, [EmuGame("Zelda", 3600, 100)], "Ryujinx"), "Ryujinx", "ryujinx")
+    assert store.sessions[0]["uid"] == pc_like.con.execute("SELECT uid FROM sessions").fetchone()[0]
+    # tracked play on the Deck shrinks what the import adds
+    store.sessions.append({"uid": "u1", "game": "Zelda", "emulator": "Ryujinx", "start": 0, "end": 600,
+                           "seconds": 600.0, "source": None, "device": "deck1", "updated": 1})
+    store.import_totals("Ryujinx", "ryujinx", {"Zelda": (3600.0, 100.0)})
+    assert sum(s["seconds"] for s in store.sessions) == 3600
+
+
+def test_ryujinx_totals_from_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr(deck, "HOME", tmp_path)
+    meta = tmp_path / ".config" / "Ryujinx" / "games" / "01008cf01baac000" / "gui" / "metadata.json"
+    meta.parent.mkdir(parents=True)
+    meta.write_text(json.dumps({"title": "Zelda", "timespan_played": "07:28:14.62",
+                                "last_played_utc": "2026-10-12T10:43:00Z"}), encoding="utf-8")
+    assert deck.ryujinx_totals() == {"Zelda": (26894.0, 1791801780.0)}
+
+
+@pytest.fixture
+def dav_server(tmp_path):
+    from cheroot import wsgi
+    from wsgidav.wsgidav_app import WsgiDAVApp
+    root = tmp_path / "dav"
+    root.mkdir()
+    server = wsgi.Server(("127.0.0.1", 0), WsgiDAVApp({
+        "provider_mapping": {"/dav": str(root)},
+        "http_authenticator": {"domain_controller": None, "accept_basic": True, "accept_digest": False,
+                               "default_to_digest": False},
+        "simple_dc": {"user_mapping": {"*": {"me@example.com": {"password": "app-pass"}}}},
+        "verbose": 0, "logging": {"enable": False}}))
+    server.prepare()
+    threading.Thread(target=server.serve, daemon=True).start()
+    yield f"http://127.0.0.1:{server.bind_addr[1]}/dav/"
+    server.stop()
+
+
+def test_deck_upload_reaches_the_windows_app(tmp_path, dav_server):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"device_id": "deck1", "name": "Steam Deck",
+                               "webdav": {"url": dav_server, "user": "me@example.com", "password": "app-pass"}}))
+    agent = deck.Agent(cfg, tmp_path / "data")
+    for s in range(0, 200, 10):
+        agent.tracker.tick(1_800_000_000 + s, ("PPSSPP", "Monster Hunter Freedom Unite"))
+    agent.tracker.tick(1_800_000_200, None)
+    assert agent.sync().startswith("uploaded")
+    assert agent.sync() == "up to date"                         # unchanged -> no upload
+    with pytest.raises(deck.SyncError, match="auth"):
+        deck.WebDAV(dav_server, "me@example.com", "wrong").check()
+
+    pc = DB(tmp_path / "pc.db", device="PC")
+    blobs, _ = run_sync(WebDAV(dav_server, "me@example.com", "app-pass"), "PC", None, {})
+    for blob in blobs.values():
+        merge_payload(pc, decode(blob))
+    assert {r["game"]: r["total"] for r in pc.game_stats()} == {"Monster Hunter Freedom Unite": 190.0}
