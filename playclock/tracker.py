@@ -1,4 +1,5 @@
 """Polling tracker: detect which game is running and accumulate time into the DB."""
+import re
 import time
 from dataclasses import dataclass
 
@@ -15,6 +16,10 @@ class Detection:
     game: str
     title: str
     foreground: bool
+    key: str | None = None  # stable game id when known ("switch:<title id>")
+
+
+TITLE_ID = re.compile(r"[(\[]([0-9a-fA-F]{16})[)\]]")  # "(0100F2C0115B6000)" in Switch emulator titles
 
 
 @dataclass
@@ -56,13 +61,16 @@ def detect(rules: list[Rule], windows: list[Window], pc_games: dict[str, str] | 
             if hit is None and not w.minimized:
                 game = rule.game_from_title(w.title)
                 if game:
-                    hit = Detection(rule.name, game, w.title, w.foreground)
+                    tid = TITLE_ID.search(w.title) if rule.platform == "Switch" else None
+                    hit = Detection(rule.name, game, w.title, w.foreground,
+                                    f"switch:{tid.group(1).lower()}" if tid else None)
         shown = [w for w in pid_windows if not w.minimized]
         if hit is None and rule.log == "ryujinx" and shown and logs is not None and pid_windows[0].path:
-            game, paused = logs.setdefault(pid_windows[0].path, RyujinxLog()).poll(pid_windows[0].path)
+            reader = logs.setdefault(pid_windows[0].path, RyujinxLog())
+            game, paused = reader.poll(pid_windows[0].path)
             if game and not paused:  # a paused game isn't being played
                 w = max(shown, key=lambda w: w.area)
-                hit = Detection(rule.name, game, w.title, w.foreground)
+                hit = Detection(rule.name, game, w.title, w.foreground, reader.key)
         if hit is None and rule.fallback and shown:
             w = max(pid_windows, key=lambda w: w.area)
             hit = Detection(rule.name, rule.fallback, w.title, w.foreground)
@@ -110,7 +118,9 @@ class Tracker:
         self.detections, self.seen = detect(self.rules, list_windows() if windows is None else windows,
                                             lookup(self.cfg.get("pc_games")), self.logs)
         d = self._pick(self.detections)
-        game = self.db.resolve(d.game) if d else None
+        game = self.db.canonical(d.game, d.key) if d else None  # one name per game id, garbled names dropped
+        if game is None:
+            d = None
 
         if self.current and game == self.current.game and continuous:
             self.current.seconds += dt

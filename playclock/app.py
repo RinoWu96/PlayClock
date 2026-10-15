@@ -171,6 +171,7 @@ class Controller(QObject):
         self.timer.timeout.connect(self.on_tick)
         self.timer.start(int(self.cfg["interval"] * 1000))
         self.on_tick()
+        QTimer.singleShot(4000, self.unify_games)  # one name per game, and no double-counted imports
 
         self.syncing = False
         self.last_auto_sync = 0.0
@@ -217,6 +218,11 @@ class Controller(QObject):
             self.window.on_tick(changed)
         if self.overlay:
             self.overlay.update()
+        known = self.cfg.get("ryujinx_paths", [])
+        fresh = [p for p in self.tracker.logs if p not in known]
+        if fresh:  # remember where Ryujinx lives so its old logs can be read even when it isn't running
+            self.set_cfg("ryujinx_paths", known + fresh)
+            self.unify_games()
         self.ticks += 1
         if self.ticks % 12 == 1:  # about once a minute: a stat() call unless Steam's file changed
             self.sync_steam()
@@ -455,6 +461,34 @@ class Controller(QObject):
         for k in ("webdav", "sync_tags", "sync_hash", "summary_hash", "sync_error", "last_sync", "sync_devices"):
             self.cfg.pop(k, None)
         save_config(self.cfg)
+
+    # --- one name per game ------------------------------------------------------
+    def unify_games(self) -> int:
+        """One name per game (see unify.py), then re-import Steam so merged names aren't counted twice."""
+        from .emulog import ryujinx_log_dirs
+        from .importers import ryujinx_roots
+        from .unify import unify
+        try:
+            dirs = []
+            for exe in [*self.cfg.get("ryujinx_paths", []), ""]:
+                dirs += ryujinx_log_dirs(exe)
+            steam = None
+            root, acc = self.steam_account()
+            if acc:
+                from .steam import name_variants, scan_steam
+                games = scan_steam(root, acc, i18n.LANG, self.db.steam_names())[0]
+                steam = ({int(g.key.split(":")[1]): g.title for g in games}, name_variants(root))
+            merged = unify(self.db, list(dict.fromkeys(dirs)), ryujinx_roots(), steam)
+            if acc:
+                self.sync_steam(force=True)
+        except Exception as e:  # never let tidying up break the app
+            self.tray.setToolTip(f"{APP_TITLE}\n" + tr("检测出错：{e}", e=e))
+            return 0
+        if merged:
+            self.changed()
+            self.tray.showMessage(APP_TITLE, tr("已把 {n} 个重复的游戏名（不同语言）合并到一起。", n=merged),
+                                  QSystemTrayIcon.Information, 4000)
+        return merged
 
     # --- floating panel -------------------------------------------------------
     def cover(self, game: str):

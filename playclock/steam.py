@@ -149,6 +149,17 @@ def read_appinfo(path: Path) -> dict[int, tuple[str, str, dict]]:
     return apps
 
 
+def name_variants(root: Path) -> dict[int, list[str]]:
+    """appid -> every name Steam has for it (default + localized), so names saved in another language can be
+    matched back to the game."""
+    try:
+        info = read_appinfo(root / "appcache" / "appinfo.vdf")
+    except (OSError, ValueError, struct.error, IndexError):
+        return {}
+    return {appid: list(dict.fromkeys([name, *[v for v in localized.values() if isinstance(v, str)]]))
+            for appid, (name, _kind, localized) in info.items()}
+
+
 # --------------------------------------------------------------------------- import
 
 
@@ -173,7 +184,7 @@ def scan_steam(root: Path, account: SteamAccount, lang: str = "zh",
         else:
             unknown.append(appid)
             continue
-        games.append(EmuGame(name.strip(), secs, last, header_art(root, appid)))
+        games.append(EmuGame(name.strip(), secs, last, header_art(root, appid), key=f"steam:{appid}"))
     return games, unknown
 
 

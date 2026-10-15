@@ -14,10 +14,33 @@ import os
 import re
 from pathlib import Path
 
-LOADED = re.compile(r"Application Loaded: (?P<game>.+?)(?: v\d[\w.\-]*)? \[[0-9a-fA-F]{16}\]")
+LOADED = re.compile(r"Application Loaded: (?P<game>.+?)(?: v\d[\w.\-]*)? \[(?P<tid>[0-9a-fA-F]{16})\]")
 PAUSED = "Emulation was paused"
 RESUMED = "Emulation was resumed"
 ENDED = re.compile(r"= TerminationRequested|Stopping audio processor")
+
+
+def switch_key(title_id: str) -> str:
+    return f"switch:{title_id.lower()}"
+
+
+def log_titles(dirs: list[Path]) -> dict[str, list[str]]:
+    """Every name each Switch title id was loaded under in all logs, oldest first — a game's name changes
+    when Ryujinx's language changes, and older logs keep the old one."""
+    out: dict[str, list[str]] = {}
+    files = sorted((f for d in dirs if d.is_dir() for f in d.glob("*.log")), key=lambda f: f.stat().st_mtime)
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in LOADED.finditer(text):
+            names = out.setdefault(switch_key(m.group("tid")), [])
+            name = m.group("game").strip()
+            if name in names:
+                names.remove(name)
+            names.append(name)
+    return out
 
 
 def ryujinx_log_dirs(exe_path: str) -> list[Path]:
@@ -39,10 +62,12 @@ class RyujinxLog:
         self.offset = 0
         self.partial = b""
         self.game: str | None = None
+        self.key: str | None = None  # "switch:<title id>" of the loaded game
         self.paused = False
 
     def _reset(self, file: Path | None):
         self.file, self.offset, self.partial, self.game, self.paused = file, 0, b"", None, False
+        self.key = None
 
     def feed(self, data: bytes) -> None:
         lines = (self.partial + data).split(b"\n")
@@ -52,12 +77,13 @@ class RyujinxLog:
             m = LOADED.search(line)
             if m:
                 self.game, self.paused = m.group("game").strip(), False
+                self.key = switch_key(m.group("tid"))
             elif PAUSED in line:
                 self.paused = True
             elif RESUMED in line:
                 self.paused = False
             elif self.game and ENDED.search(line):
-                self.game, self.paused = None, False
+                self.game, self.paused, self.key = None, False, None
 
     def poll(self, exe_path: str) -> tuple[str | None, bool]:
         logs = [f for d in ryujinx_log_dirs(exe_path) for f in d.glob("*.log")]

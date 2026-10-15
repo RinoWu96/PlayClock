@@ -42,6 +42,7 @@ def export_payload(db: DB, device_name: str) -> dict:
         "sessions": sessions,
         "aliases": [dict(r) for r in db.con.execute("SELECT raw, name, updated FROM aliases")],
         "tombstones": [dict(r) for r in db.con.execute("SELECT uid, at FROM tombstones")],
+        "keys": [dict(r) for r in db.con.execute("SELECT key, game, updated FROM game_keys")],
     }
 
 
@@ -69,7 +70,22 @@ def merge_payload(db: DB, p: dict) -> int:
             if row is None or a["updated"] > row[0]:
                 con.execute("INSERT OR REPLACE INTO aliases(raw, name, updated) VALUES(?, ?, ?)",
                             (a["raw"], a["name"], a["updated"]))
+                con.execute("DELETE FROM aliases WHERE raw=? AND name=?", (a["name"], a["raw"]))  # no A<->B loop
                 changed += con.execute("UPDATE sessions SET game=? WHERE game=?", (a["name"], a["raw"])).rowcount
+        for k in p.get("keys", []):  # one name per game id: the newest choice wins on every device
+            row = con.execute("SELECT game, updated FROM game_keys WHERE key=?", (k["key"],)).fetchone()
+            if row is None:
+                con.execute("INSERT INTO game_keys(key, game, updated) VALUES(?, ?, ?)",
+                            (k["key"], k["game"], k["updated"]))
+                changed += 1
+            elif row["game"] != k["game"]:
+                if (k["updated"], k["game"]) > (row["updated"], row["game"]):
+                    db.rename_game(row["game"], k["game"])
+                    con.execute("UPDATE game_keys SET game=?, updated=? WHERE key=?",
+                                (k["game"], k["updated"], k["key"]))
+                else:
+                    db.rename_game(k["game"], row["game"])  # their name becomes an alias of ours
+                changed += 1
         for t in p.get("tombstones", []):
             con.execute("INSERT OR IGNORE INTO tombstones(uid, at) VALUES(?, ?)", (t["uid"], t["at"]))
             changed += con.execute("DELETE FROM sessions WHERE uid=?", (t["uid"],)).rowcount

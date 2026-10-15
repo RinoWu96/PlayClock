@@ -62,6 +62,22 @@ Ryujinx 1.3 起运行游戏时，窗口标题只显示「Ryujinx <版本号>」�
 4. 在 `tests/test_core.py` 的 `test_titles` 里加几行真实标题样例：至少一行运行中的标题（带游戏名），一行空闲时的标题（期望结果为 `None`）。
 5. 运行 `.venv\Scripts\python.exe -m pytest -q tests`，全部通过就完成了。
 
+### 一个游戏只保留一个名字（`db.canonical`、`unify.py`）
+
+模拟器和启动器换了语言后，同一个游戏会以简体、繁体或英文名出现。为了不让它们变成好几个游戏，PlayClock 用稳定的「游戏 ID」认游戏：
+
+- **ID 从哪来**：
+  - Switch 游戏用 Title ID：Ryujinx 日志的 `Application Loaded: … [<TitleID>]`、Ryujinx 记录目录 `games/<TitleID>/`，以及 Switch 模拟器窗口标题里的 `(<TitleID>)`。
+  - Steam 游戏用 AppID。
+- **一个 ID 对应一个名字**：`game_keys` 表记录「ID → 名字」，名字取第一次见到的（或用户改名后的）。以后这个 ID 以别的名字出现时，就把它设为别名，并把已有的记录合并过去。
+- **读不出名字的情况**：Ryujinx 有时只给出 `<Unknown Name>` 或一串乱码，这些不算名字。如果这个 ID 已经有名字就用它；没有 ID 时，只有用户为这个乱码设过的别名能给它命名，否则跳过，不会记成一个乱码游戏。
+- **启动时清理已有数据**（`unify.py`）：
+  1. 从所有 Ryujinx 日志里收集每个 Title ID 用过的名字（旧日志保留着旧语言的名字），连同 Ryujinx 现在显示的名字一起合并。
+  2. 合并后重新导入 Ryujinx 的时长：同一游戏、同一来源只保留一条导入记录，所以改名前后各导入一次造成的重复计算会被消掉。
+  3. Steam 用本机 `appinfo.vdf` 里每个游戏的各语言名称，把已有的 Steam 记录按 AppID 合并（只合并 Steam 来源的游戏，不碰其他平台的），然后重新导入 Steam 时长。
+- **何时运行**：每次启动时运行一次，第一次见到某个 Ryujinx 的安装位置时也会运行。Ryujinx 的位置会记在 `config.json` 的 `ryujinx_paths` 里，这样 Ryujinx 没开的时候也能读到它旁边的日志。
+- **多设备同步**：「ID → 名字」表也会同步（同步文件里的 `keys`）。同一个 ID 在不同设备上名字不同时，以 `updated` 更新的为准，用户改名算最新，所以所有设备最后会统一成同一个名字。合并别名时会删除反向的别名，避免出现 A→B、B→A 的循环。
+
 ## 2. 数据库（`db.py`）
 
 SQLite 文件 `data/playtime.db`。
