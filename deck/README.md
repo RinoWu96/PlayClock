@@ -6,15 +6,16 @@ Steam Deck（SteamOS）上的后台记录程序：自动记录模拟器游戏时
 - **游戏模式、桌面模式下都在后台运行**。它是用户级的 systemd 服务，开机自动启动，SteamOS 更新后也不会消失，安装也不需要 root 权限。
 - **休眠不计时**：Deck 休眠时程序会被冻结；唤醒后发现两次检查之间隔了很久，这段时间就不计入，并且马上同步一次。
 - **Ryujinx 暂停不计时**：从 Ryujinx 自己的日志里读出游戏名和暂停状态，和 Windows 版的做法一样。
-- **导入 Ryujinx 自己记录的时长**：安装之前玩的时间也会算进来，只补差额，和电脑上的 Ryujinx 时长分开计算。
+- **导入之前的游玩时长**：来源有两个，一是 Ryujinx 自己的记录，二是 Steam 给每个模拟器快捷方式记的时长（`localconfig.vdf`）。两者记的是同一段游玩，所以同一个游戏取较大的那个，不会相加；已经由本程序计时的部分会扣掉，和电脑上的时长分开计算。
 - **只用到 Python 标准库**：SteamOS 自带 Python，不用安装任何东西。
 
 ## 支持的模拟器
 Ryujinx、yuzu 系（citron / eden / sudachi…）、Citra 系（Azahar / Lime3DS）、Dolphin、PCSX2、DuckStation、PPSSPP、RPCS3、Cemu、Vita3K、melonDS、mGBA、Flycast、shadPS4、xemu、RetroArch（EmuDeck 的 AppImage 和 Flatpak 版本都能识别）。
 
 识别方法：
-- 游戏名取自模拟器启动命令里的 ROM 文件名，会自动去掉 `(USA)`、`[v0]` 之类的标签。
-- Ryujinx 的游戏名从它自己的日志里读。
+- **优先用 Steam 库里的名字**。EmuDeck 的游戏都是用 Steam ROM Manager 作为「非 Steam 游戏」加进 Steam 的，从 Steam 启动时，模拟器进程会带上 Steam 设的环境变量 `SteamGameId`。程序用它在 `shortcuts.vdf` 里找到对应的快捷方式，用你在库里看到的那个名字记录。
+- 不是从 Steam 启动时，游戏名取自模拟器启动命令里的 ROM 文件名，会自动去掉 `(USA)`、`[v0]` 之类的标签；Ryujinx 的游戏名从它自己的日志里读。
+- Switch 游戏还会带上 Title ID（从 Ryujinx 日志、ROM 文件名或快捷方式的启动参数里取），这样在电脑上会和不同语言的同名游戏合并成一个。
 - 和电脑上名字不一样的游戏，在 PlayClock 里用「重命名 / 合并」统一成一个名字即可，以后的记录也会自动归到一起。
 
 ## 安装（在 Deck 的桌面模式里）

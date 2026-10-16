@@ -12,7 +12,6 @@ deck = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deck)
 
 from playclock.db import DB  # noqa: E402
-from playclock.importers import EmuGame, apply_import, plan_import  # noqa: E402
 from playclock.rules import DEFAULT_RULES, Rule, platform_map  # noqa: E402
 from playclock.sync import decode, encode, merge_payload, run_sync, WebDAV  # noqa: E402
 
@@ -86,7 +85,7 @@ def test_payload_merges_into_the_windows_app(tmp_path):
     for s in range(0, 400, 10):
         t.tick(1_800_000_000 + s, ("melonDS", "Pokemon Platinum"))
     t.tick(1_800_000_400, None)
-    store.import_totals("Ryujinx", "ryujinx", [("Zelda", 7200.0, 1_800_000_500.0, None)])
+    store.import_totals({"ryujinx": [("Zelda", 7200.0, 1_800_000_500.0, None, "Ryujinx")]})
     blob = deck.encode(store.payload("Steam Deck"))
     assert blob == encode(store.payload("Steam Deck"))          # byte-identical to the PC encoder
     pc = DB(tmp_path / "pc.db", device="PC")
@@ -97,18 +96,23 @@ def test_payload_merges_into_the_windows_app(tmp_path):
     assert platform_map(rules)["melonDS"] == "NDS"              # PC shows it under NDS
 
 
-def test_ryujinx_import_ids_match_the_windows_app(tmp_path):
-    """Same uid as PlayClock's own Ryujinx import for that device, so the two never double count."""
+def test_import_takes_the_larger_source_not_the_sum(tmp_path):
+    """Ryujinx's own total and Steam's shortcut play time describe the same play: never added together."""
     store = deck.Store(tmp_path / "s.json", "deck1")
-    store.import_totals("Ryujinx", "ryujinx", [("Zelda", 3600.0, 100.0, None)])
-    pc_like = DB(tmp_path / "x.db", device="deck1")
-    apply_import(pc_like, plan_import(pc_like, [EmuGame("Zelda", 3600, 100)], "Ryujinx"), "Ryujinx", "ryujinx")
-    assert store.sessions[0]["uid"] == pc_like.con.execute("SELECT uid FROM sessions").fetchone()[0]
-    # tracked play on the Deck shrinks what the import adds
-    store.sessions.append({"uid": "u1", "game": "Zelda", "emulator": "Ryujinx", "start": 0, "end": 600,
+    zelda = "switch:01008cf01baac000"
+    sources = {"ryujinx": [("塞尔达传说 智慧的再现", 3600.0, 100.0, zelda, "Ryujinx")],
+               "steam": [("The Legend of Zelda: Echoes of Wisdom", 4200.0, 200.0, zelda, "Ryujinx"),
+                         ("Pokemon Platinum", 1800.0, 50.0, "steamshortcut:42", "melonDS")]}
+    store.import_totals(sources)
+    rows = {s["game"]: s for s in store.sessions}
+    assert set(rows) == {"塞尔达传说 智慧的再现", "Pokemon Platinum"}           # one name per game id
+    assert rows["塞尔达传说 智慧的再现"]["seconds"] == 4200 and rows["Pokemon Platinum"]["emulator"] == "melonDS"
+    # tracked play on the Deck shrinks what the import adds; re-importing updates the same row
+    store.sessions.append({"uid": "u1", "game": "塞尔达传说 智慧的再现", "emulator": "Ryujinx", "start": 0, "end": 600,
                            "seconds": 600.0, "source": None, "device": "deck1", "updated": 1})
-    store.import_totals("Ryujinx", "ryujinx", [("Zelda", 3600.0, 100.0, None)])
-    assert sum(s["seconds"] for s in store.sessions) == 3600
+    store.import_totals(sources)
+    assert sum(s["seconds"] for s in store.sessions if s["game"] == "塞尔达传说 智慧的再现") == 4200
+    assert len([s for s in store.sessions if s["source"] == "import"]) == 2
 
 
 def test_ryujinx_totals_from_metadata(tmp_path, monkeypatch):
@@ -117,7 +121,7 @@ def test_ryujinx_totals_from_metadata(tmp_path, monkeypatch):
     meta.parent.mkdir(parents=True)
     meta.write_text(json.dumps({"title": "Zelda", "timespan_played": "07:28:14.62",
                                 "last_played_utc": "2026-10-12T10:43:00Z"}), encoding="utf-8")
-    assert deck.ryujinx_totals() == [("Zelda", 26894.0, 1791801780.0, "switch:01008cf01baac000")]
+    assert deck.ryujinx_totals() == [("Zelda", 26894.0, 1791801780.0, "switch:01008cf01baac000", "Ryujinx")]
 
 
 @pytest.fixture
@@ -169,8 +173,75 @@ def test_deck_names_in_another_language_merge_into_the_pc_name(tmp_path):
         t.tick(1_800_000_000 + s, found)
     t.tick(1_800_000_130, ("Ryujinx", "<Unknown Name>", "switch:01008cf01baac000"))   # same id, no name: same game
     t.tick(1_800_000_140, None)
-    store.import_totals("Ryujinx", "ryujinx", [("�garbled", 900.0, 1.0, "switch:01007ef00011e000")])
+    store.import_totals({"ryujinx": [("�garbled", 900.0, 1.0, "switch:01007ef00011e000", "Ryujinx")]})
     assert [s["game"] for s in store.sessions] == ["The Legend of Zelda: Echoes of Wisdom"]   # garbled id: skipped
     merge_payload(pc, decode(deck.encode(store.payload("Steam Deck"))))
     assert pc.games() == ["塞尔达传说 智慧的再现"] and pc.game_detail("塞尔达传说 智慧的再现")["total"] == 130
+
+
+# --------------------------------------------------------------------------- Steam shortcuts (EmuDeck)
+
+def binary_vdf(d: dict) -> bytes:
+    """Writer for Steam's binary KeyValues (as in shortcuts.vdf), to build fixtures."""
+    import struct
+    out = b""
+    for k, v in d.items():
+        key = k.encode() + b"\0"
+        if isinstance(v, dict):
+            out += b"\x00" + key + binary_vdf(v) + b"\x08"
+        elif isinstance(v, int):
+            out += b"\x02" + key + struct.pack("<i", v)
+        else:
+            out += b"\x01" + key + v.encode() + b"\0"
+    return out
+
+
+SRM = "/home/deck/Emulation/tools/launchers"
+ZELDA_ID = -1234567890          # Steam stores shortcut app ids as signed 32-bit
+ZELDA_APPID = ZELDA_ID & 0xFFFFFFFF
+
+
+@pytest.fixture
+def steam(tmp_path, monkeypatch):
+    monkeypatch.setattr(deck, "HOME", tmp_path)
+    cfg = tmp_path / ".local" / "share" / "Steam" / "userdata" / "291012910" / "config"
+    cfg.mkdir(parents=True)
+    (cfg / "shortcuts.vdf").write_bytes(binary_vdf({"shortcuts": {
+        "0": {"appid": ZELDA_ID, "AppName": "The Legend of Zelda: Echoes of Wisdom", "Exe": f'"{SRM}/ryujinx.sh"',
+              "LaunchOptions": "'/run/media/mmcblk0p1/Emulation/roms/switch/Zelda EoW [01008CF01BAAC000][v0].nsp'",
+              "LastPlayTime": 1_800_000_000},
+        "1": {"appid": 987654, "AppName": "Pokemon Platinum", "Exe": f'"{SRM}/melonds.sh"',
+              "LaunchOptions": "'/home/deck/Emulation/roms/nds/pokemon.nds'"},
+        "2": {"appid": 555, "AppName": "Magpie", "Exe": '"/home/deck/Magpie.exe"', "LaunchOptions": ""},
+    }}) + b"\x08")
+    gid = (ZELDA_APPID << 32) | 0x02000000     # what Steam puts in SteamGameId for a shortcut
+    (cfg / "localconfig.vdf").write_text(f'''"UserLocalConfigStore" {{ "Software" {{ "Valve" {{ "Steam" {{ "apps" {{
+        "{gid}" {{ "LastPlayed" "1800000100" "Playtime" "70" }}
+        "987654" {{ "Playtime" "30" }}
+        "555" {{ "Playtime" "999" }}
+    }} }} }} }} }}''', encoding="utf-8")
+    return gid
+
+
+def test_shortcuts_and_steam_play_time(steam):
+    scs = deck.shortcuts()
+    assert scs[ZELDA_APPID]["name"] == "The Legend of Zelda: Echoes of Wisdom" and len(scs) == 3
+    assert deck.shortcut_playtimes()[ZELDA_APPID] == (4200.0, 1_800_000_100)
+    totals = sorted(deck.shortcut_totals())
+    assert totals == [("Pokemon Platinum", 1800.0, None, "steamshortcut:987654", "melonDS"),
+                      ("The Legend of Zelda: Echoes of Wisdom", 4200.0, 1_800_000_100, "switch:01008cf01baac000", "Ryujinx")]
+    # Magpie is not an emulator shortcut: its 999 minutes are not imported
+
+
+def test_running_game_named_from_its_steam_shortcut(steam):
+    d = deck.Detector()
+    proc = (31, "Ryujinx", ["/tmp/.mount_x/usr/bin/Ryujinx", "/run/media/mmcblk0p1/Emulation/roms/switch/zelda.nsp"],
+            {"SteamGameId": str(steam), "SteamAppId": "0"})
+    assert d.detect([proc]) == ("Ryujinx", "The Legend of Zelda: Echoes of Wisdom", "switch:01008cf01baac000")
+    melon = (32, "melonDS", ["/app/bin/melonDS", "/home/deck/Emulation/roms/nds/pokemon.nds"], {"SteamGameId": "987654"})
+    assert deck.Detector().detect([melon]) == ("melonDS", "Pokemon Platinum", "steamshortcut:987654")
+    outside = (33, "melonDS", ["/app/bin/melonDS", "/home/deck/Emulation/roms/nds/pokemon.nds"], {})
+    assert deck.Detector().detect([outside]) == ("melonDS", "pokemon", None)          # not from Steam: ROM name
+    signed = (34, "Ryujinx", ["/tmp/Ryujinx"], {"SteamGameId": str(steam - (1 << 64))})   # same id, printed signed
+    assert deck.Detector().detect([signed])[1] == "The Legend of Zelda: Echoes of Wisdom"
 

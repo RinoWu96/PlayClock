@@ -9,9 +9,12 @@ Windows app shows the Deck as one of its devices. Standard library only; no UI.
     python3 playclock_deck.py sync      # upload now
     python3 playclock_deck.py doctor    # diagnostics: emulator processes, Ryujinx paths, Python
 
-How a game is found: every INTERVAL seconds, /proc is scanned for the user's emulator processes. The game is
-the ROM named on the emulator's command line; for Ryujinx it is read from Ryujinx's own log (which also says
+How a game is found: every INTERVAL seconds, /proc is scanned for the user's emulator processes. EmuDeck
+starts every game from Steam (Steam ROM Manager adds them as non-Steam shortcuts), so the emulator process
+carries SteamGameId: its shortcut in shortcuts.vdf gives the name shown in the Steam library. Without that,
+the game is the ROM on the emulator's command line, or for Ryujinx the game in its own log (which also says
 when emulation is paused). Suspend freezes everything, so a long wall-clock gap between polls is not counted.
+Play time recorded before installing comes from Ryujinx's own totals and Steam's per-shortcut play time.
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ import json
 import os
 import re
 import socket
+import struct
 import sys
 import time
 import urllib.error
@@ -149,6 +153,7 @@ def match_emulator(comm: str, args: list[str]):
 
 
 LOADED = re.compile(r"Application Loaded: (?P<game>.+?)(?: v\d[\w.\-]*)? \[(?P<tid>[0-9a-fA-F]{16})\]")
+ENDED = re.compile(r"= TerminationRequested|Stopping audio processor")
 TITLE_ID = re.compile(r"(?<![0-9a-fA-F])(01[0-9a-fA-F]{14})(?![0-9a-fA-F])")  # Switch title id in a ROM name
 
 
@@ -156,7 +161,157 @@ def bad_name(name: str | None) -> bool:
     """Not a name: empty, Ryujinx's "<Unknown Name>", or bytes misread as text (same as the Windows app)."""
     name = (name or "").strip()
     return not name or name == "<Unknown Name>" or "\ufffd" in name or any(ord(ch) < 32 for ch in name)
-ENDED = re.compile(r"= TerminationRequested|Stopping audio processor")
+
+
+def switch_key(text: str, emulator: str) -> str | None:
+    """"switch:<title id>" when a Switch emulator's ROM path / options name a title id."""
+    tid = TITLE_ID.search(text) if emulator in ("Ryujinx", "yuzu & forks") else None
+    return f"switch:{tid.group(1).lower()}" if tid else None
+
+
+def environ(pid: int) -> dict[str, str]:
+    try:
+        raw = Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return {}
+    pairs = (item.decode("utf-8", "replace").split("=", 1) for item in raw.split(b"\0") if b"=" in item)
+    return {k: v for k, v in pairs}
+
+
+def steam_appid(env: dict[str, str]) -> int | None:
+    """The (32-bit) app id Steam started this process for: non-Steam shortcuts carry their 64-bit game id
+    (appid << 32 | 0x02000000) in SteamGameId."""
+    for var in ("SteamGameId", "SteamAppId"):
+        try:
+            n = int(env.get(var) or 0)
+        except ValueError:
+            continue
+        if n < 0:  # a 64-bit id printed as a signed number
+            n += 1 << 64
+        if n:
+            return n >> 32 if n > 0xFFFFFFFF else n
+    return None
+
+
+# --------------------------------------------------------------------------- Steam (EmuDeck's shortcuts)
+
+
+def steam_roots() -> list[Path]:
+    out = []
+    for p in (HOME / ".local" / "share" / "Steam", HOME / ".steam" / "steam", HOME / ".steam" / "root"):
+        if (p / "userdata").is_dir() and p.resolve() not in [o.resolve() for o in out]:
+            out.append(p)
+    return out
+
+
+def read_binary_vdf(data: bytes) -> dict:
+    """Steam's binary KeyValues as in shortcuts.vdf (NUL-terminated keys; keys lower-cased)."""
+    def read(i):
+        out = {}
+        while i < len(data):
+            t = data[i]
+            i += 1
+            if t == 0x08:
+                return out, i
+            j = data.index(b"\0", i)
+            key = data[i:j].decode("utf-8", "replace").lower()
+            i = j + 1
+            if t == 0x00:
+                out[key], i = read(i)
+            elif t == 0x01:
+                j = data.index(b"\0", i)
+                out[key] = data[i:j].decode("utf-8", "replace")
+                i = j + 1
+            elif t == 0x02:
+                out[key] = struct.unpack_from("<i", data, i)[0]
+                i += 4
+            elif t == 0x07:
+                out[key] = struct.unpack_from("<Q", data, i)[0]
+                i += 8
+            else:
+                raise ValueError(f"unknown KeyValues type {t:#x}")
+        return out, i
+    return read(0)[0]
+
+
+def parse_vdf(text: str) -> dict:
+    """Steam's text KeyValues (localconfig.vdf), keys lower-cased."""
+    root: dict = {}
+    stack, key = [root], None
+    for s_, brace in re.findall(r'"((?:[^"\\]|\\.)*)"|([{}])', text):
+        if brace == "{":
+            new: dict = {}
+            stack[-1][(key or "").lower()] = new
+            stack.append(new)
+            key = None
+        elif brace == "}":
+            stack.pop()
+        elif key is None:
+            key = s_
+        else:
+            stack[-1][key.lower()] = s_
+            key = None
+    return root
+
+
+def shortcuts() -> dict[int, dict]:
+    """Non-Steam shortcuts of every Steam account here: appid -> {name, exe, launch, last_played}."""
+    out: dict[int, dict] = {}
+    for root in steam_roots():
+        for f in root.glob("userdata/*/config/shortcuts.vdf"):
+            try:
+                kv = read_binary_vdf(f.read_bytes()).get("shortcuts", {})
+            except (OSError, ValueError, IndexError, struct.error):
+                continue
+            for v in kv.values():
+                if isinstance(v, dict) and "appid" in v:
+                    out[v["appid"] & 0xFFFFFFFF] = {
+                        "name": (v.get("appname") or "").strip(), "exe": v.get("exe", ""),
+                        "launch": v.get("launchoptions", ""), "last_played": v.get("lastplaytime") or None}
+    return out
+
+
+def shortcut_playtimes() -> dict[int, tuple[float, float | None]]:
+    """Steam's own play time per app id from localconfig.vdf (minutes there; 64-bit game ids folded to app ids)."""
+    out: dict[int, tuple[float, float | None]] = {}
+    for root in steam_roots():
+        for f in root.glob("userdata/*/config/localconfig.vdf"):
+            try:
+                kv = parse_vdf(f.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+            apps = kv.get("userlocalconfigstore", {}).get("software", {}).get("valve", {}).get("steam", {}).get("apps", {})
+            for k, d in apps.items():
+                if not (k.isdigit() and isinstance(d, dict)):
+                    continue
+                n = int(k)
+                appid = n >> 32 if n > 0xFFFFFFFF else n
+                minutes = int(d.get("playtime", "0") or 0)
+                if minutes > 0:
+                    last = int(d.get("lastplayed", "0") or 0) or None
+                    prev, prev_last = out.get(appid, (0.0, None))
+                    out[appid] = (max(prev, minutes * 60.0), max(filter(None, (prev_last, last)), default=None))
+    return out
+
+
+def shortcut_emulator(sc: dict):
+    """The EMULATORS entry a shortcut starts (EmuDeck launchers are named after the emulator)."""
+    text = f"{sc.get('exe', '')} {sc.get('launch', '')}"
+    return next((e for e in _EMU if e[1].search(text)), None)
+
+
+def shortcut_totals() -> list[tuple[str, float, float | None, str | None, str]]:
+    """Steam's play time for the emulator shortcuts: (name, seconds, last played, game id, emulator)."""
+    scs, times = shortcuts(), shortcut_playtimes()
+    out = []
+    for appid, (secs, last) in times.items():
+        sc = scs.get(appid)
+        entry = shortcut_emulator(sc) if sc else None
+        if not entry or bad_name(sc["name"]):
+            continue  # not one of the emulator shortcuts
+        key = switch_key(sc["launch"], entry[0]) or f"steamshortcut:{appid}"
+        out.append((sc["name"], secs, last or sc.get("last_played"), key, entry[0]))
+    return out
 
 
 class RyujinxLog:
@@ -211,25 +366,47 @@ def ryujinx_dirs(args: list[str] | None = None) -> list[Path]:
 
 
 class Detector:
-    def __init__(self):
+    def __init__(self, shortcuts_source=shortcuts):
         self.ryujinx_logs: dict[str, RyujinxLog] = {}
         self.seen: list[tuple[str, int, list[str]]] = []
         self.paused: str | None = None
+        self.shortcuts_source = shortcuts_source
+        self.shortcuts: dict[int, dict] = {}
+        self.shortcuts_read = 0.0
+        self.steam_ids: dict[int, int | None] = {}  # pid -> Steam app id it was started for
+
+    def shortcut(self, appid: int | None) -> dict | None:
+        """Re-read shortcuts.vdf at most once a minute, or when an unknown shortcut is started."""
+        if appid is None:
+            return None
+        age = time.time() - self.shortcuts_read
+        if (appid not in self.shortcuts and age > 5) or age > 60:
+            try:
+                self.shortcuts = self.shortcuts_source()
+            except Exception:
+                self.shortcuts = {}
+            self.shortcuts_read = time.time()
+        return self.shortcuts.get(appid)
 
     def detect(self, procs=None) -> tuple[str, str, str | None] | None:
         """(emulator, game, game id) being played right now, or None (also None while a Ryujinx game is paused).
         The game id ("switch:<title id>") lets every language of one game end up under one name."""
         self.seen, self.paused = [], None
         found = None
-        for pid, comm, args in (processes() if procs is None else procs):
+        live = set()
+        for item in (processes() if procs is None else procs):
+            pid, comm, args = item[:3]
             entry = match_emulator(comm, args)
             if not entry:
                 continue
             name, _, exts = entry
+            live.add(pid)
             self.seen.append((name, pid, args))
+            if pid not in self.steam_ids:  # a process's environment doesn't change: read it once
+                self.steam_ids[pid] = steam_appid(item[3] if len(item) > 3 else environ(pid))
+            sc = self.shortcut(self.steam_ids[pid])
             game = game_from_args(args, exts)
-            tid = TITLE_ID.search(" ".join(args[1:])) if name in ("Ryujinx", "yuzu & forks") else None
-            key = f"switch:{tid.group(1).lower()}" if tid else None
+            key = switch_key(" ".join(args[1:]) + " " + (sc["launch"] if sc else ""), name)
             if name == "Ryujinx":
                 dirs = [d / "Logs" for d in ryujinx_dirs(args)]
                 reader = self.ryujinx_logs.setdefault(str(dirs), RyujinxLog(dirs))
@@ -238,8 +415,12 @@ class Detector:
                     self.paused = logged
                     continue
                 game, key = (logged, reader.key) if logged else (game, key)
+            if sc and not bad_name(sc["name"]):
+                game = sc["name"]  # the name shown in the Steam library
+                key = key or f"steamshortcut:{self.steam_ids[pid]}"
             if (game or key) and found is None:
                 found = (name, game, key)
+        self.steam_ids = {pid: v for pid, v in self.steam_ids.items() if pid in live}
         return found
 
 
@@ -288,29 +469,34 @@ class Store:
         self.sessions = [x for x in self.sessions if x["uid"] != s["uid"]]
         self.tombstones.append({"uid": s["uid"], "at": time.time()})
 
-    def tracked(self, game: str, emulator: str) -> float:
-        return sum(s["seconds"] for s in self.sessions
-                   if s["game"] == game and s["emulator"] == emulator and s["source"] is None)
+    def tracked(self, game: str) -> float:
+        return sum(s["seconds"] for s in self.sessions if s["game"] == game and s["source"] is None)
 
-    def import_totals(self, emulator: str, source: str, entries) -> None:
-        """An emulator's own play-time totals [(title, seconds, last played, game id)]: only what wasn't tracked
-        here is added, one row per game whose uid matches the Windows app's (sha1 of "<device>|<source>|<game>"),
-        so re-importing just updates it."""
-        totals: dict[str, tuple[float, float | None]] = {}
-        for title, secs, last, key in entries:
-            game = self.name_for(title, key)
-            if game:
-                prev, prev_last = totals.get(game, (0.0, None))
-                totals[game] = (prev + secs, max(filter(None, (prev_last, last)), default=None))
-        for game, (total, last) in totals.items():
-            uid = hashlib.sha1(f"{self.device}|{source}|{game}".encode()).hexdigest()
-            add = max(0.0, total - self.tracked(game, emulator))
+    def import_totals(self, sources: dict[str, list]) -> None:
+        """Play time recorded before (or beside) this program: {source: [(title, seconds, last, game id, emulator)]}.
+        Ryujinx's own totals and Steam's per-shortcut play time describe the same play, so each game takes the
+        larger source (summed within a source), minus what was tracked here. One row per game (uid from
+        "<device>|import|<game>"), so re-importing just updates it."""
+        best: dict[str, tuple[float, float | None, str]] = {}
+        for entries in sources.values():
+            per_game: dict[str, tuple[float, float | None, str]] = {}
+            for title, secs, last, key, emulator in entries:
+                game = self.name_for(title, key)
+                if game:
+                    prev, prev_last, _ = per_game.get(game, (0.0, None, emulator))
+                    per_game[game] = (prev + secs, max(filter(None, (prev_last, last)), default=None), emulator)
+            for game, (total, last, emulator) in per_game.items():
+                if total > best.get(game, (0.0,))[0]:
+                    best[game] = (total, last, emulator)
+        for game, (total, last, emulator) in best.items():
+            uid = hashlib.sha1(f"{self.device}|import|{game}".encode()).hexdigest()
+            add = max(0.0, total - self.tracked(game))
             row = next((s for s in self.sessions if s["uid"] == uid), None)
             if row is None and add <= 0:
                 continue
             end = last or time.time()
             fields = {"game": game, "emulator": emulator, "start": end - add, "end": end, "seconds": add,
-                      "source": source, "device": self.device}
+                      "source": "import", "device": self.device}
             if row is None:
                 self.sessions.append({"uid": uid, **fields, "updated": time.time()})
             elif any(row[k] != v for k, v in fields.items()):
@@ -367,9 +553,9 @@ class Tracker:
         return True
 
 
-def ryujinx_totals() -> list[tuple[str, float, float | None, str | None]]:
-    """Ryujinx's own per-game play time (games/<titleid>/gui/metadata.json): (title, seconds, last, game id)."""
-    out: list[tuple[str, float, float | None, str | None]] = []
+def ryujinx_totals() -> list[tuple[str, float, float | None, str | None, str]]:
+    """Ryujinx's own per-game play time (games/<titleid>/gui/metadata.json): (title, seconds, last, id, emulator)."""
+    out: list[tuple[str, float, float | None, str | None, str]] = []
     for root in ryujinx_dirs():
         for meta in root.glob("games/*/gui/metadata.json"):
             d = read_json(meta, {})
@@ -386,7 +572,7 @@ def ryujinx_totals() -> list[tuple[str, float, float | None, str | None]]:
             if lm:
                 last = float(calendar.timegm(tuple(map(int, lm.groups())) + (0, 0, 0)))
             if secs > 0:
-                out.append((title, secs, last, key))
+                out.append((title, secs, last, key, "Ryujinx"))
     return out
 
 
@@ -462,11 +648,14 @@ class Agent:
         return WebDAV(w["url"], w["user"], w["password"]) if w else None
 
     def sync(self, force: bool = False) -> str:
-        """Import Ryujinx's totals, then upload this device's file if it changed. Returns a status text."""
-        try:
-            self.store.import_totals("Ryujinx", "ryujinx", ryujinx_totals())
-        except OSError as e:
-            log(f"Ryujinx import skipped: {e}")
+        """Import earlier play time (Ryujinx, Steam shortcuts), then upload this device's file if it changed."""
+        sources = {}
+        for source, read in (("ryujinx", ryujinx_totals), ("steam", shortcut_totals)):
+            try:
+                sources[source] = read()
+            except Exception as e:  # a file in an unexpected shape must not stop recording
+                log(f"{source} import skipped: {e}")
+        self.store.import_totals(sources)
         client = self.client()
         if not client:
             return "not set up (run: playclock_deck.py setup)"
@@ -539,13 +728,25 @@ def cmd_doctor(agent: Agent) -> None:
         logs = sorted(root.glob("Logs/*.log"), key=lambda f: f.stat().st_mtime)
         print(f"Ryujinx data {root}: {len(list(root.glob('games/*/gui/metadata.json')))} games with metadata,"
               f" newest log: {logs[-1].name if logs else 'none'}")
-    print("Ryujinx totals:", {t or k: round(sec / 3600, 2) for t, sec, _l, k in ryujinx_totals()} or "none")
+    print("Ryujinx totals:", {t or k: round(sec / 3600, 2) for t, sec, _l, k, _e in ryujinx_totals()} or "none")
+    print("Steam roots:", [str(r) for r in steam_roots()] or "none")
+    scs, times = shortcuts(), shortcut_playtimes()
+    print(f"Steam shortcuts: {len(scs)} (emulator ones marked; play time = Steam's own record)")
+    for appid, sc in sorted(scs.items(), key=lambda kv: kv[1]["name"].lower()):
+        entry = shortcut_emulator(sc)
+        secs = times.get(appid, (0.0, None))[0]
+        print(f"  {'*' if entry else ' '} {appid:>10} {sc['name'][:40]:<40} [{entry[0] if entry else '-'}]"
+              f" {secs / 3600:.1f} h  exe={sc['exe'][-50:]!r} launch={sc['launch'][-60:]!r}")
+    print("Steam play time entries that look like non-Steam shortcuts:",
+          {a: round(t[0] / 3600, 2) for a, t in times.items() if a in scs} or "none")
     print("emulator-like processes:")
     hint = re.compile("|".join(p for _, p, _ in EMULATORS) + r"|emu|appimage", re.I)
     for pid, comm, args in processes():
         if hint.search(comm + " " + " ".join(args[:2])):
             entry = match_emulator(comm, args)
-            print(f"  [{entry[0] if entry else '?'}] pid {pid} comm={comm!r} argv={args[:6]}")
+            env = environ(pid)
+            print(f"  [{entry[0] if entry else '?'}] pid {pid} comm={comm!r} SteamGameId={env.get('SteamGameId')}"
+                  f" SteamAppId={env.get('SteamAppId')} argv={args[:6]}")
     found = agent.detector.detect()
     print("detected now:", found or (f"{agent.detector.paused} (paused)" if agent.detector.paused else "nothing"))
 
