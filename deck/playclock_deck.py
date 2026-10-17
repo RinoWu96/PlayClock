@@ -145,22 +145,38 @@ def game_from_args(args: list[str], exts: set[str]) -> str | None:
     return None
 
 
+_procs: dict[int, tuple[float, tuple[str, list[str]] | None]] = {}  # pid -> (read at, (comm, argv) or None)
+PROC_REFRESH = 60  # a known pid is read again after this long (a process can exec into another program)
+
+
+def _read_proc(pid: int, uid: int) -> tuple[str, list[str]] | None:
+    try:
+        if os.stat(f"/proc/{pid}").st_uid != uid:
+            return None
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+        comm = Path(f"/proc/{pid}/comm").read_text().strip()
+    except OSError:
+        return None
+    args = [a.decode("utf-8", "replace") for a in raw.split(b"\0") if a]
+    return (comm, args) if args else None
+
+
 def processes():
-    """(pid, comm, argv) for this user's processes (Linux /proc)."""
-    uid = os.getuid()
+    """(pid, comm, argv) for this user's processes (Linux /proc). Only new pids are read on each poll (and
+    every pid again once a minute), which keeps the 10-second poll nearly free."""
+    uid, now, live = os.getuid(), time.monotonic(), set()
     for d in os.listdir("/proc"):
         if not d.isdigit():
             continue
-        try:
-            if os.stat(f"/proc/{d}").st_uid != uid:
-                continue
-            raw = Path(f"/proc/{d}/cmdline").read_bytes()
-            comm = Path(f"/proc/{d}/comm").read_text().strip()
-        except OSError:
-            continue
-        args = [a.decode("utf-8", "replace") for a in raw.split(b"\0") if a]
-        if args:
-            yield int(d), comm, args
+        pid = int(d)
+        live.add(pid)
+        cached = _procs.get(pid)
+        if cached is None or now - cached[0] > PROC_REFRESH:
+            cached = _procs[pid] = (now, _read_proc(pid, uid))
+        if cached[1]:
+            yield (pid, *cached[1])
+    for pid in [p for p in _procs if p not in live]:
+        del _procs[pid]
 
 
 def match_emulator(comm: str, args: list[str]):

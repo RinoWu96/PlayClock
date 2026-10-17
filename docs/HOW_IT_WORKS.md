@@ -181,11 +181,17 @@ SQLite 文件 `data/playtime.db`。
 - **游戏 ID**：Ryujinx 从日志拿 Title ID，其他 Switch 模拟器从 ROM 文件名里的 `[01…]` 拿。同一个 ID 在这台 Deck 上只用第一次见到的名字（时间戳记成负数），乱码和 `<Unknown Name>` 不算名字；同步文件里带上 `keys`，电脑上已有的名字或用户改过的名字优先，Deck 的名字会变成它的别名。
 - **测试**：`tests/test_deck.py` 覆盖了各模拟器 EmuDeck 风格的启动命令、Ryujinx 日志、休眠和短会话；和 PC 版的契约测试（同步文件被真实的 `merge_payload` 合并、导入记录 ID 一致）；以及经本机 WebDAV 服务器、由 PC 版 `run_sync` 下载合并的完整流程。
 
+## 5b. Ryujinx 存档同步（`savesync.py`）
+
+在电脑和 Steam Deck 之间像 Steam 云存档一样同步 Ryujinx 存档（按游戏 ID 对应、内容指纹判断谁新、冲突由用户选、覆盖前备份）。存储格式、判断规则、时机和测试见 [SAVE_SYNC_DESIGN.md](SAVE_SYNC_DESIGN.md)。`savesync.py` 只用标准库，电脑端和 Deck 端共用；它的 `DavStorage` 也是游玩记录同步（`sync.WebDAV`）和 Deck 端上传用的唯一 WebDAV 客户端，所有 HTTPS 请求共用一个 TLS 上下文（每次新建都要重新加载系统根证书，约 30 ms）。
+
 ## 6. 后台占用
 
 - 窗口只在打开时存在；关闭后整个销毁，同时清空封面缓存，并调用 `SetProcessWorkingSetSize(-1, -1)` 让系统换出空闲内存。
-- 后台只有一个 `interval` 秒的检测定时器，没有每秒运行的任务。
-- 参考测量（只开托盘时）：专用内存约 24 MB，工作集约 7 MB，CPU 约 0。
+- 后台只有一个 `interval` 秒的检测定时器，没有每秒运行的任务。云同步每 10 分钟一次；存档同步只在事件发生时运行（关闭游戏、Ryujinx 关闭、另一台设备同步后、启动时、每天一次）。
+- 打包时去掉了用不到的 Qt 组件（QML / Quick、PDF 及其图片插件、软件 OpenGL），安装包从约 108 MB 降到约 73 MB，运行时也不再加载 `Qt6Pdf.dll`。
+- 参考测量（2026-10-17，PlayClock 0.4.0，真实数据的副本，Windows）：只开托盘约 36 MB 专用内存；加游戏浮窗约 37 MB；加云同步约 42 MB；一次完整的存档同步之后不再增长（多出的约 5 MB 是网络和压缩模块本身）。空闲 CPU 约 0。
+- Deck 端（0.2.0，SteamOS 3.8）：约 33 MB 内存（大部分是 Python 解释器本身），空闲时约 0.13% 单核 CPU。其中每 10 秒的进程扫描只读新出现的进程（每分钟全部重读一次），启动守卫每秒只列一次 `/proc`。存档同步关闭时，启动守卫和休眠监视两个线程都不会启动。
 
 ## 7. 隐私
 

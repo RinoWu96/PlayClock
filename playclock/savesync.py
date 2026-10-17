@@ -183,6 +183,18 @@ class Precondition(StorageError):
     """The file changed since it was read (If-Match failed)."""
 
 
+_tls = None
+
+
+def tls_context():
+    """One TLS context for every request: building one per request reloads the system's root certificates."""
+    global _tls
+    if _tls is None:
+        import ssl
+        _tls = ssl.create_default_context()
+    return _tls
+
+
 class DavStorage:
     """The few operations save sync needs, over WebDAV (坚果云 by default). Counts bytes moved."""
 
@@ -203,7 +215,8 @@ class DavStorage:
         with self._count:
             self.up += len(data or b"")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            tls = tls_context() if url.startswith("https:") else None
+            with urllib.request.urlopen(req, timeout=self.timeout, context=tls) as r:
                 body = r.read()
                 with self._count:
                     self.down += len(body)
