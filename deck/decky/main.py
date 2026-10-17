@@ -5,6 +5,7 @@ in Desktop Mode and when Decky is broken. This backend only reads the service's 
 (config.json, which the service re-reads by itself), passes requests to it (requests.json + SIGUSR1) and checks a
 new cloud account before saving it. It does nothing in the background.
 """
+import asyncio
 import json
 import os
 import signal
@@ -162,14 +163,35 @@ class Plugin:
         decky.logger.info(f"cloud account changed to {user} @ {provider(url)}")
         return {"ok": True, "message": "已连接"}
 
-    async def request(self, action: str, title: str = "", keep: str = "") -> dict:
-        """sync (play records + saves now) / resolve a save conflict (keep "cloud" or "local")."""
-        if action not in ("sync", "resolve") or (action == "resolve" and keep not in ("cloud", "local")):
+    async def get_versions(self, title: str) -> dict:
+        """A game's cloud versions and local backups, newest first. Listing the cloud needs xml.etree, which
+        Decky's bundled Python lacks, so the service's own command does it with the system Python."""
+        if not title.isalnum():
+            raise ValueError(title)
+        proc = await asyncio.create_subprocess_exec(
+            "/usr/bin/python3", str(AGENT_DIR / "playclock_deck.py"), "saves", "versions", title,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return {"ok": False, "message": "读取云端超时"}
+        if proc.returncode != 0:
+            return {"ok": False, "message": (err.decode("utf-8", "replace").strip().splitlines() or ["失败"])[-1]}
+        data = json.loads(out.decode("utf-8"))
+        return {"ok": True, **data}
+
+    async def request(self, action: str, title: str = "", keep: str = "", version: str = "") -> dict:
+        """sync (play records + saves now) / sync_game (one game) / resolve a save conflict (keep "cloud" or
+        "local") / restore_version (a cloud version file or a local backup path) — done by the service."""
+        if (action not in ("sync", "sync_game", "resolve", "restore_version")
+                or (action == "resolve" and keep not in ("cloud", "local"))
+                or (action == "restore_version" and not version)):
             raise ValueError(action)
         path = DATA / "requests.json"
         pending = read_json(path, [])
         pending = pending if isinstance(pending, list) else []
-        pending.append({"action": action, "title": title, "keep": keep, "at": time.time()})
+        pending.append({"action": action, "title": title, "keep": keep, "version": version, "at": time.time()})
         DATA.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(pending), encoding="utf-8")

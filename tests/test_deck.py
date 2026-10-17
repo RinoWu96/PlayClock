@@ -364,3 +364,42 @@ def test_plugin_controls_settings_requests_and_live_status(tmp_path, dav_server,
     reader.game = None
     agent.watch_saves(False)
     assert pc.head(ZELDA)[0]["device_name"] == "Steam Deck"
+
+
+def test_saves_page_requests_versions_and_restores(tmp_path, dav_server, monkeypatch, capsys):
+    from test_savesync import V1, V2, V3, ZELDA, content, play, ryujinx
+    monkeypatch.setattr(deck, "HOME", tmp_path / "home")
+    monkeypatch.setattr(deck, "CONFIG_DIR", tmp_path / "home" / ".config" / "playclock")
+    monkeypatch.setattr(deck, "ryujinx_pids", lambda procs=None: [])
+    droot = ryujinx(tmp_path / "home" / ".config" / "Ryujinx", {"0000000000000002": (ZELDA, V1)})
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"device_id": "deck1234abcd", "name": "Steam Deck", "save_sync": True,
+                               "webdav": {"url": dav_server, "user": "me@example.com", "password": "app-pass"}}))
+    agent = deck.Agent(cfg, tmp_path / "data")
+    agent.sync_saves()                                   # V1 up
+    play(droot, "0000000000000002", V2)
+    agent.sync_saves()                                   # V2 up
+
+    deck.cmd_saves(agent, ["versions", ZELDA.lower()])
+    listed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert len(listed["cloud"]) == 2 and listed["device"] == "deck1234" and listed["cloud"][0]["device"] == "deck1234"
+    oldest = listed["cloud"][-1]["file"]
+
+    def ask(**req):
+        (tmp_path / "data").mkdir(exist_ok=True)
+        (tmp_path / "data" / "requests.json").write_text(json.dumps([req]))
+        agent.handle_requests()
+        return agent.last_action
+
+    assert ask(action="restore_version", title=ZELDA, version=oldest)["ok"]   # back to V1, then uploaded
+    assert content(droot, "0000000000000002") == V1
+    backup = agent.make_saves().backups(ZELDA)[0]                              # V2, taken before
+    assert ask(action="restore_version", title=ZELDA, version=str(backup))["ok"]
+    assert content(droot, "0000000000000002") == V2
+    bad = ask(action="restore_version", title=ZELDA, version=str(tmp_path / "config.json"))
+    assert not bad["ok"] and "backup" in bad["message"]
+    play(droot, "0000000000000002", V3)
+    assert ask(action="sync_game", title=ZELDA)["message"].endswith("upload")
+    monkeypatch.setattr(deck, "ryujinx_pids", lambda procs=None: [99])          # Ryujinx open
+    busy = ask(action="restore_version", title=ZELDA, version=oldest)
+    assert not busy["ok"] and "Ryujinx" in busy["message"] and content(droot, "0000000000000002") == V3

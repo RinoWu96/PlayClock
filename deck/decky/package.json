@@ -1,6 +1,6 @@
 {
   "name": "playclock-decky",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Decky panel for PlayClock on Steam Deck",
   "type": "module",
   "scripts": {

@@ -100,6 +100,14 @@ def test_panel_backend(plugin, dav):
     assert [(r["action"], r["keep"]) for r in queued] == [("sync", ""), ("resolve", "cloud")]
     with pytest.raises(ValueError):
         run(p.request("resolve", "01000E200DC58000", "both"))
+    with pytest.raises(ValueError):
+        run(p.request("restore_version", "01000E200DC58000"))           # which version?
+    run(p.request("sync_game", "01000E200DC58000"))
+    run(p.request("restore_version", "01000E200DC58000", "", "v-x.zip"))
+    queued = json.loads((home / ".local" / "share" / "playclock" / "requests.json").read_text())
+    assert [(r["action"], r["version"]) for r in queued[-2:]] == [("sync_game", ""), ("restore_version", "v-x.zip")]
+    with pytest.raises(ValueError):
+        run(p.get_versions("../etc"))
 
 
 def test_panel_without_the_service(plugin):

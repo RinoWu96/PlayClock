@@ -38,7 +38,7 @@ import time
 import uuid
 from pathlib import Path
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 HOME = Path.home()
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "playclock"
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local" / "share") / "playclock"
@@ -857,6 +857,23 @@ class Agent:
                     self.last_sync_result = self.sync(force=True)
                     saves = self.sync_saves(restore=not ryujinx_pids(), why="manual")
                     msg = self.last_sync_result + (f"; saves: {len(saves)} games checked" if saves else "")
+                elif action == "sync_game":
+                    title = req["title"].upper()
+                    msg = f"{title}: " + self.sync_saves(restore=not ryujinx_pids(), titles=[title],
+                                                          why="manual").get(title, "")
+                elif action == "restore_version":
+                    title, version = req["title"].upper(), req["version"]
+                    with self.save_lock:
+                        s = self.make_saves()
+                        if version.startswith("v-") and "/" not in version:
+                            chosen = version  # a cloud version
+                        else:  # a local backup: only from this game's own backup folder
+                            chosen = Path(version)
+                            if chosen.parent != (s.backup_dir / title) or not chosen.is_file():
+                                raise ValueError("not a backup of this game")
+                        s.restore_version(title, chosen)  # raises Busy while Ryujinx runs
+                    msg = f"{title}: restored, " + self.sync_saves(restore=False, titles=[title],
+                                                                    why="restored a version").get(title, "")
                 elif action == "resolve":
                     title, keep = req["title"].upper(), req["keep"]
                     with self.save_lock:
@@ -871,7 +888,8 @@ class Agent:
                     continue
                 self.last_action = {"action": action, "ok": True, "message": msg, "time": time.time()}
             except Exception as e:  # reported to the plugin, never fatal
-                self.last_action = {"action": action, "ok": False, "message": str(e), "time": time.time()}
+                msg = "请先关闭 Ryujinx 再恢复存档" if isinstance(e, savesync.Busy) else str(e)
+                self.last_action = {"action": action, "ok": False, "message": msg, "time": time.time()}
             log(f"request {action}: {self.last_action['message']}")
 
     # --- what the Decky plugin shows (live.json, written only when it changes) -----
@@ -1134,6 +1152,16 @@ def cmd_saves(agent: Agent, args: list[str]) -> None:
     if what == "sync":
         for title, status in agent.sync_saves(restore=not ryujinx_pids(), why="manual").items():
             print(f"{title} {status}")
+        return
+    if what == "versions" and len(args) > 1:  # for the Decky panel: cloud versions + local backups as JSON
+        title = args[1].upper()
+        s = agent.make_saves(timeout=15)
+        cloud = []
+        for name in s.versions(title):  # v-<stamp>-<device>-<hash8>.zip, newest first
+            _, stamp, device, _h = name[:-4].split("-", 3)
+            cloud.append({"file": name, "stamp": stamp, "device": device})
+        local = [{"path": str(b), "stamp": b.stem.split("-")[0]} for b in s.backups(title)]
+        print(json.dumps({"cloud": cloud, "backups": local, "device": agent.store.device[:8]}))
         return
     if what in ("use-cloud", "use-local") and len(args) > 1:
         title = args[1].upper()

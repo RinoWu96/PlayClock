@@ -1,5 +1,6 @@
 import {
   ButtonItem,
+  ConfirmModal,
   DialogBody,
   DialogButton,
   DialogHeader,
@@ -7,6 +8,7 @@ import {
   Field,
   Focusable,
   ModalRoot,
+  Navigation,
   PanelSection,
   PanelSectionRow,
   TextField,
@@ -14,7 +16,7 @@ import {
   showModal,
   staticClasses,
 } from "@decky/ui";
-import { callable, definePlugin, toaster } from "@decky/api";
+import { callable, definePlugin, routerHook, toaster } from "@decky/api";
 import { useEffect, useState } from "react";
 import { FaClock } from "react-icons/fa";
 
@@ -73,7 +75,10 @@ const setName = callable<[name: string], State>("set_name");
 const setAccount = callable<[url: string, user: string, password: string], { ok: boolean; message: string }>(
   "set_account",
 );
-const request = callable<[action: string, title: string, keep: string], { ok: boolean; woke: boolean }>("request");
+const request = callable<[action: string, title: string, keep: string, version: string], { ok: boolean; woke: boolean }>(
+  "request",
+);
+const getVersions = callable<[title: string], Versions>("get_versions");
 
 const notify = (body: string) => toaster.toast({ title: "PlayClock", body });
 
@@ -109,41 +114,144 @@ function statusText(g: Game): string {
   return STATUS[g.status] ?? g.status;
 }
 
-function GamesModal(props: { closeModal?: () => void; games: Game[]; ask: (title: string, keep: string) => void }) {
+const SAVES_ROUTE = "/playclock/saves";
+
+interface Versions {
+  ok: boolean;
+  message?: string;
+  device?: string;
+  cloud?: { file: string; stamp: string; device: string }[];
+  backups?: { path: string; stamp: string }[];
+}
+
+/** "20261017T093000123Z" (UTC) -> local "10-17 19:30". */
+function stampLabel(stamp: string): string {
+  const m = /^(\d{4})(\d\d)(\d\d)T(\d\d)(\d\d)(\d\d)/.exec(stamp);
+  if (!m) return stamp;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]));
+  return `${d.getMonth() + 1}-${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function confirmThen(title: string, text: string, ok: () => void) {
+  showModal(<ConfirmModal strTitle={title} strDescription={text} strOKButtonText="恢复" strCancelButtonText="取消" onOK={ok} />);
+}
+
+/** Full-screen page: this Deck's games on the left, the chosen one's status, actions and history on the right. */
+function SavesPage() {
+  const [state, setState] = useState<State | null>(null);
+  const [selected, setSelected] = useState<string>("");
+  const [versions, setVersions] = useState<Versions | null>(null);
+  const [loading, setLoading] = useState(false);
+  const refresh = () => getState().then(setState).catch((e) => console.error("[PlayClock] get_state failed", e));
+
+  useEffect(() => {
+    refresh();
+    const timer = setInterval(refresh, 3000); // only while the page is open
+    return () => clearInterval(timer);
+  }, []);
+  useEffect(() => setVersions(null), [selected]);
+
+  const games = state?.games ?? [];
+  const game = games.find((g) => g.title === selected) ?? games[0];
+  const act = async (action: string, title: string, keep = "", version = "") => {
+    await request(action, title, keep, version);
+    notify("已提交，正在处理…");
+    setTimeout(refresh, 2500);
+  };
+  const loadVersions = async (title: string) => {
+    setLoading(true);
+    try {
+      setVersions(await getVersions(title));
+    } finally {
+      setLoading(false);
+    }
+  };
+  const last = state?.live?.last_action;
+
   return (
-    <ModalRoot closeModal={props.closeModal} onCancel={props.closeModal}>
-      <DialogHeader>这台 Deck 上的存档</DialogHeader>
-      <DialogBody>
-        {props.games.length === 0 && <Field description="还没有 Ryujinx 存档。" />}
-        {props.games.map((g) => (
-          <div key={g.title}>
-            <Field label={g.name} description={statusText(g)} />
-            {g.conflict && (
-              <Focusable style={{ display: "flex", gap: "8px", margin: "4px 0 12px" }}>
-                <DialogButton
-                  onClick={() => {
-                    props.ask(g.title, "cloud");
-                    props.closeModal?.();
-                  }}
-                >
-                  用云端的
+    <div style={{ padding: "56px 24px 24px", height: "100%", boxSizing: "border-box", overflowY: "auto" }}>
+      <DialogHeader>存档管理</DialogHeader>
+      {last && (
+        <div style={{ opacity: 0.8, marginBottom: "12px" }}>
+          {`${ago(last.time)}：${last.ok ? "" : "失败："}${last.message}`}
+        </div>
+      )}
+      {!state ? (
+        <div>正在读取…</div>
+      ) : games.length === 0 ? (
+        <div>这台 Deck 上还没有 Ryujinx 存档。</div>
+      ) : (
+        <div style={{ display: "flex", gap: "24px", alignItems: "flex-start" }}>
+          <Focusable style={{ display: "flex", flexDirection: "column", gap: "6px", width: "40%" }}>
+            {games.map((g) => (
+              <DialogButton
+                key={g.title}
+                onClick={() => setSelected(g.title)}
+                style={{ textAlign: "left", opacity: game?.title === g.title ? 1 : 0.75 }}
+              >
+                <div>{g.name}</div>
+                <div style={{ fontSize: "12px", opacity: 0.7 }}>{statusText(g)}</div>
+              </DialogButton>
+            ))}
+          </Focusable>
+          {game && (
+            <Focusable style={{ flex: 1, display: "flex", flexDirection: "column", gap: "8px" }}>
+              <div style={{ fontSize: "20px", fontWeight: "bold" }}>{game.name}</div>
+              <div>{statusText(game)}</div>
+              <div style={{ opacity: 0.7 }}>
+                {game.cloud_device ? `云端最新：${game.cloud_device}，${ago(game.cloud_time)}` : "云端还没有这个游戏"}
+              </div>
+              <DialogButton onClick={() => act("sync_game", game.title)}>立即同步这个游戏</DialogButton>
+              {game.conflict && (
+                <>
+                  <div style={{ marginTop: "8px" }}>两台设备都有新进度，只能保留一份（另一份会留在备份里）：</div>
+                  <DialogButton onClick={() => act("resolve", game.title, "cloud")}>用云端的</DialogButton>
+                  {game.mine && (
+                    <DialogButton onClick={() => act("resolve", game.title, "local")}>用这台 Deck 的</DialogButton>
+                  )}
+                </>
+              )}
+              <div style={{ marginTop: "12px", fontWeight: "bold" }}>历史版本</div>
+              {!versions && (
+                <DialogButton disabled={loading} onClick={() => loadVersions(game.title)}>
+                  {loading ? "正在读取…" : "查看历史版本"}
                 </DialogButton>
-                {g.mine && (
+              )}
+              {versions && !versions.ok && <div>{versions.message}</div>}
+              {versions?.ok && (versions.cloud ?? []).length + (versions.backups ?? []).length === 0 && (
+                <div style={{ opacity: 0.7 }}>还没有历史版本。</div>
+              )}
+              {versions?.ok &&
+                (versions.cloud ?? []).map((v) => (
                   <DialogButton
-                    onClick={() => {
-                      props.ask(g.title, "local");
-                      props.closeModal?.();
-                    }}
+                    key={v.file}
+                    onClick={() =>
+                      confirmThen(game.name, "用这个云端版本替换现在的存档？现在的存档会先备份。需要先关闭 Ryujinx。", () =>
+                        act("restore_version", game.title, "", v.file),
+                      )
+                    }
                   >
-                    用这台 Deck 的
+                    {`云端 · ${v.device === versions.device ? "这台 Deck" : "其他设备"} · ${stampLabel(v.stamp)}`}
                   </DialogButton>
-                )}
-              </Focusable>
-            )}
-          </div>
-        ))}
-      </DialogBody>
-    </ModalRoot>
+                ))}
+              {versions?.ok &&
+                (versions.backups ?? []).map((b) => (
+                  <DialogButton
+                    key={b.path}
+                    onClick={() =>
+                      confirmThen(game.name, "用这份本机备份替换现在的存档？现在的存档会先备份。需要先关闭 Ryujinx。", () =>
+                        act("restore_version", game.title, "", b.path),
+                      )
+                    }
+                  >
+                    {`本机备份 · ${stampLabel(b.stamp)}`}
+                  </DialogButton>
+                ))}
+            </Focusable>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -250,7 +358,7 @@ function Content() {
   const s = state.settings!;
   const change = async (key: keyof Settings, value: boolean | number) => setState(await setSetting(key, value));
   const ask = async (action: string, title = "", keep = "") => {
-    await request(action, title, keep);
+    await request(action, title, keep, "");
     notify(action === "sync" ? "正在同步…" : "已提交，正在处理…");
     setTimeout(refresh, 2500);
   };
@@ -313,20 +421,24 @@ function Content() {
             onChange={(v) => change("save_sync", v)}
           />
         </PanelSectionRow>
-        {s.save_sync && conflicts > 0 && (
+        {s.save_sync && (
           <PanelSectionRow>
-            <Field label={`${conflicts} 个游戏有冲突`} description="两台设备都有新进度，点下面的按钮选择保留哪一份" />
+            <Field
+              label={`${(state.games ?? []).length} 个游戏`}
+              description={conflicts ? `${conflicts} 个有冲突，需要在存档管理里选择` : "都已同步"}
+            />
           </PanelSectionRow>
         )}
         {s.save_sync && (
           <PanelSectionRow>
             <ButtonItem
               layout="below"
-              onClick={() =>
-                showModal(<GamesModal games={state.games ?? []} ask={(title, keep) => ask("resolve", title, keep)} />)
-              }
+              onClick={() => {
+                Navigation.CloseSideMenus();
+                Navigation.Navigate(SAVES_ROUTE);
+              }}
             >
-              {`各游戏存档（${(state.games ?? []).length} 个）`}
+              存档管理…
             </ButtonItem>
           </PanelSectionRow>
         )}
@@ -406,9 +518,15 @@ function Content() {
   );
 }
 
-export default definePlugin(() => ({
-  name: "PlayClock",
-  titleView: <div className={staticClasses.Title}>PlayClock</div>,
-  content: <Content />,
-  icon: <FaClock />,
-}));
+export default definePlugin(() => {
+  routerHook.addRoute(SAVES_ROUTE, SavesPage, { exact: true });
+  return {
+    name: "PlayClock",
+    titleView: <div className={staticClasses.Title}>PlayClock</div>,
+    content: <Content />,
+    icon: <FaClock />,
+    onDismount() {
+      routerHook.removeRoute(SAVES_ROUTE);
+    },
+  };
+});
