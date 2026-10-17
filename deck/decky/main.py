@@ -168,9 +168,14 @@ class Plugin:
         Decky's bundled Python lacks, so the service's own command does it with the system Python."""
         if not title.isalnum():
             raise ValueError(title)
+        # Decky is a PyInstaller bundle: its library path points at its own (older) OpenSSL, which the system
+        # Python must not load. Give the child the environment from before the bundle changed it.
+        env = {k: v for k, v in os.environ.items() if k not in ("LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH")}
+        if os.environ.get("LD_LIBRARY_PATH_ORIG"):
+            env["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH_ORIG"]
         proc = await asyncio.create_subprocess_exec(
             "/usr/bin/python3", str(AGENT_DIR / "playclock_deck.py"), "saves", "versions", title,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
         except asyncio.TimeoutError:
