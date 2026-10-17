@@ -711,7 +711,7 @@ class LaunchGuard(threading.Thread):
                 os.kill(pid, signal.SIGSTOP)
                 held.append(pid)
             log(f"Ryujinx starting: holding it while checking the cloud for newer saves")
-            self.agent.sync_saves(restore=True, timeout=4, ignore_ryujinx=True, why="launch")
+            self.agent.sync_saves(restore=True, timeout=4, ignore_ryujinx=True, why="launch", quick=True)
         except Exception as e:
             log(f"launch check skipped: {e}")
         finally:
@@ -831,13 +831,14 @@ class Agent:
                                  self.data_dir / "save_backups" / "ryujinx", self.store.device, self.name, busy=busy)
 
     def sync_saves(self, restore: bool = True, titles: list[str] | None = None, timeout: float = 20,
-                   ignore_ryujinx: bool = False, why: str = "") -> dict:
+                   ignore_ryujinx: bool = False, why: str = "", quick: bool = False) -> dict:
         """Compare with the cloud: upload what changed here, restore what changed there (Ryujinx closed only)."""
         if not self.saves_enabled():
             return {}
         with self.save_lock:
             try:
-                result = self.make_saves(timeout, ignore_ryujinx).sync(allow_restore=restore, titles=titles)
+                result = self.make_saves(timeout, ignore_ryujinx).sync(allow_restore=restore, titles=titles,
+                                                                       quick=quick)
             except savesync.StorageError as e:
                 log(f"saves ({why}): {e}")
                 return {}

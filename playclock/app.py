@@ -513,7 +513,8 @@ class Controller(QObject):
         if not self.save_sync_on() or self.save_syncing:
             return
         self.save_syncing = True
-        before = {t: g.get("status") for t, g in self.save_state().get("games", {}).items()}
+        before = {t: "conflict" if g.get("remote_conflicts") else g.get("status")
+                  for t, g in self.save_state().get("games", {}).items()}
 
         def work():
             return self.make_save_sync().sync(titles=titles)
@@ -537,8 +538,10 @@ class Controller(QObject):
             self.cfg["save_error"] = ""
             save_config(self.cfg)
             names = self.save_game_names()
+            games = self.save_state().get("games", {})
             restored = [names.get(t, t) for t, s in result.items() if s == "restore"]
-            conflicts = [names.get(t, t) for t, s in result.items() if s == "conflict" and before.get(t) != "conflict"]
+            conflicts = [names.get(t, t) for t, s in result.items()  # here, or left by another device
+                         if (s == "conflict" or games.get(t, {}).get("remote_conflicts")) and before.get(t) != "conflict"]
             waiting = [names.get(t, t) for t, s in result.items() if s == "pending_restore"]
             if restored:
                 self.tray.showMessage(APP_TITLE, tr("已从云端恢复存档：{games}", games=tr("、").join(restored)),

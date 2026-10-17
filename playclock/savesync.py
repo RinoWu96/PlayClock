@@ -25,6 +25,7 @@ import io
 import json
 import os
 import shutil
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -99,7 +100,8 @@ def game_names(root: Path) -> dict[str, str]:
             title = json.loads(meta.read_text(encoding="utf-8")).get("title", "").strip()
         except (OSError, ValueError):
             continue
-        if title:
+        # Ryujinx sometimes stores "<Unknown Name>" or undecoded bytes: not a name
+        if title and title != "<Unknown Name>" and "�" not in title and not any(ord(c) < 32 for c in title):
             out[meta.parent.parent.name.upper()] = title
     return out
 
@@ -190,6 +192,7 @@ class DavStorage:
         self.timeout, self.agent = timeout, agent
         self.up = self.down = 0
         self.made: set[str] = set()
+        self._count = threading.Lock()  # sync(quick=True) fetches in parallel
 
     def _req(self, method: str, path: str, data: bytes | None = None, headers: dict | None = None):
         url = self.base + "/".join(urllib.parse.quote(p) for p in path.strip("/").split("/") if p)
@@ -197,11 +200,13 @@ class DavStorage:
             url += "/"
         req = urllib.request.Request(url, data=data, method=method,
                                      headers={"Authorization": self.auth, "User-Agent": self.agent, **(headers or {})})
-        self.up += len(data or b"")
+        with self._count:
+            self.up += len(data or b"")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 body = r.read()
-                self.down += len(body)
+                with self._count:
+                    self.down += len(body)
                 return r.status, body, r.headers
         except urllib.error.HTTPError as e:
             if e.code in (401, 403):
@@ -386,12 +391,13 @@ class SaveSync:
 
     # --- one game --------------------------------------------------------------
     def sync_game(self, title: str, s: SaveDir | None = None, allow_restore: bool = True,
-                  allow_upload: bool = True) -> str:
-        """Bring one game in line with the cloud; returns what happened (the decide() word, or "busy")."""
+                  allow_upload: bool = True, prefetched: tuple | None = None) -> str:
+        """Bring one game in line with the cloud; returns what happened (the decide() word, or "busy").
+        `prefetched`: (head, etag) already fetched (sync(quick=True) gets them all in parallel)."""
         s = s or self.local().get(title)
         g = self.game(title)
         local = self.local_hash(s) if s else None
-        head, etag = self.head(title)
+        head, etag = prefetched if prefetched is not None else self.head(title)
         action = decide(local, g.get("base"), head)
         status = action
         try:
@@ -399,7 +405,7 @@ class SaveSync:
                 g["base"] = local
             elif action == "upload":
                 if allow_upload:
-                    self._upload(title, s, head, etag)
+                    head = self._upload(title, s, head, etag)
                 else:
                     status, g["pending"] = "pending_upload", True
             elif action == "restore":
@@ -425,7 +431,7 @@ class SaveSync:
             self.save_state()
         return status
 
-    def _upload(self, title: str, s: SaveDir, head: dict | None, etag: str) -> None:
+    def _upload(self, title: str, s: SaveDir, head: dict | None, etag: str) -> dict:
         files = read_tree(s.path / "0")
         h = files_hash(files)  # read again: the game may have written since the scan
         now = time.time()
@@ -440,6 +446,7 @@ class SaveSync:
         g = self.game(title)
         g.update(base=h, last_upload=now, pending=False)
         self._prune(title, keep=name)
+        return new
 
     def _write_head(self, title: str, head: dict, etag: str, new: bool) -> None:
         path = f"{self.folder(title)}/head.json"
@@ -542,13 +549,22 @@ class SaveSync:
                 shutil.rmtree(s.path / f"{sub}.new", ignore_errors=True)
 
     # --- everything ------------------------------------------------------------
-    def sync(self, allow_restore: bool = True, titles: list[str] | None = None) -> dict[str, str]:
-        """Sync every local save (or `titles`); games only in the cloud are reported as needs_local."""
+    def sync(self, allow_restore: bool = True, titles: list[str] | None = None, quick: bool = False) -> dict[str, str]:
+        """Sync every local save (or `titles`); games only in the cloud are reported as needs_local.
+        quick: just the local games' heads, fetched in parallel, no conflict listing — for a game about to start."""
         local = self.local()
         out = {}
+        heads: dict[str, tuple] = {}
+        if quick:
+            from concurrent.futures import ThreadPoolExecutor
+            titles = sorted(local)
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                for title, got in zip(titles, pool.map(self.head, titles)):
+                    heads[title] = got
         for title in titles or sorted(local):
             try:
-                out[title] = self.sync_game(title, local.get(title), allow_restore=allow_restore)
+                out[title] = self.sync_game(title, local.get(title), allow_restore=allow_restore,
+                                            prefetched=heads.get(title))
                 if titles is None:  # full check: also notice versions other devices left for a user to choose
                     mine = (self.game(title).get("conflict") or {}).get("file")
                     self.game(title)["remote_conflicts"] = len([c for c in self.conflicts(title) if c["file"] != mine])

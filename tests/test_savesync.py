@@ -271,3 +271,22 @@ def test_uploads_while_playing_are_rate_limited_and_traffic_counted(tmp_path, da
     assert pc.degraded()                                          # tiny test quota: over 70 %
     saved = json.loads(pc.state_path.read_text(encoding="utf-8"))
     assert saved["traffic"]["up"] == up
+
+
+def test_garbled_ryujinx_titles_are_not_names(tmp_path):
+    for tid, title in (("01007EF00011E000", "E��J`"), ("0100000000010000", "<Unknown Name>"),
+                       ("01008CF01BAAC000", "塞尔达传说 智慧的再现")):
+        meta = tmp_path / "games" / tid.lower() / "gui" / "metadata.json"
+        meta.parent.mkdir(parents=True)
+        meta.write_text(json.dumps({"title": title}), encoding="utf-8")
+    assert ss.game_names(tmp_path) == {"01008CF01BAAC000": "塞尔达传说 智慧的再现"}
+
+
+def test_quick_check_before_a_launch(tmp_path, dav):
+    pc = device(tmp_path, dav, "PC", {"0000000000000004": (ZELDA, V1), "0000000000000005": (MARIO, V1)})
+    deck = device(tmp_path, dav, "Deck", {"0000000000000002": (ZELDA, V1), "0000000000000003": (MARIO, V1)})
+    pc.sync(), deck.sync()
+    play(pc.root, "0000000000000004", V2)
+    pc.sync()
+    assert deck.sync(quick=True) == {ZELDA: "restore", MARIO: "synced"}
+    assert content(deck.root, "0000000000000002") == V2
