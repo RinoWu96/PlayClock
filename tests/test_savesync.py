@@ -259,13 +259,12 @@ def test_history_restore_then_others_follow(tmp_path, dav):
     assert content(pc.root, "0000000000000004") == V2
 
 
-def test_uploads_while_playing_are_rate_limited_and_traffic_counted(tmp_path, dav):
+def test_upload_only_when_changed_and_traffic_counted(tmp_path, dav):
     pc = device(tmp_path, dav, "PC", {"0000000000000004": (ZELDA, V1)}, quota_up=1_000)
-    assert pc.upload_if_changed(ZELDA, min_interval=900)          # first time: uploads
+    assert pc.upload_if_changed(ZELDA)                            # first time: uploads
+    assert not pc.upload_if_changed(ZELDA)                        # unchanged
     play(pc.root, "0000000000000004", V2)
-    assert not pc.upload_if_changed(ZELDA, min_interval=900)      # changed, but too soon
-    assert pc.upload_if_changed(ZELDA, min_interval=0)
-    assert not pc.upload_if_changed(ZELDA, min_interval=0)        # unchanged
+    assert pc.upload_if_changed(ZELDA)
     up, down = pc.traffic()
     assert up > 0 and down > 0
     assert pc.degraded()                                          # tiny test quota: over 70 %

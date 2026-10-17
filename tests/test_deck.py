@@ -275,9 +275,12 @@ def test_deck_save_sync_follows_the_game(tmp_path, dav_server, monkeypatch, caps
     assert agent.store.payload("Deck", agent.open_game)["open_game"]["id"] == ZELDA
     play(droot, "0000000000000002", V2)                               # an in-game save
     assert not agent.watch_saves(False)
-    assert pc.head(ZELDA)[0]["device_name"] == "Steam Deck"          # first change goes up right away
-    play(droot, "0000000000000002", V3)
+    assert pc.head(ZELDA)[0]["device_name"] == "RHINO"               # nothing before the 15-minute check
+    agent.next_save_upload = 0                                        # ... 15 minutes later
     agent.watch_saves(False)
+    assert pc.head(ZELDA)[0]["device_name"] == "Steam Deck"
+    play(droot, "0000000000000002", V3)
+    agent.watch_saves(False)                                          # not again until the next check
     assert pc.head(ZELDA)[0]["hash"] != pc.local_hash(pc.local()[ZELDA])
     reader.game = None                                                # the game is closed: upload now
     assert agent.watch_saves(False) and agent.open_game is None

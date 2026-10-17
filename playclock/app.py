@@ -181,7 +181,7 @@ class Controller(QObject):
 
         self.syncing = False
         self.last_auto_sync = 0.0
-        self.sync_timer = QTimer(self)  # cloud sync: every 2 min while playing, else every 10 (worker thread)
+        self.sync_timer = QTimer(self)  # cloud sync every 10 min (2 while playing if a phone watches; worker thread)
         self.sync_timer.timeout.connect(self.auto_sync)
         self.sync_timer.start(2 * 60 * 1000)
         QTimer.singleShot(5000, self.sync_now)
@@ -386,8 +386,9 @@ class Controller(QObject):
         return bool(self.cfg.get("webdav"))
 
     def auto_sync(self):
-        """Keep phones watching summary.json close to live while a game runs; otherwise sync rarely."""
-        if self.tracker.current or time.time() - self.last_auto_sync >= 10 * 60 - 5:
+        """Every 10 minutes; every 2 while a game runs only when a phone watches summary.json (phone_summary)."""
+        live = self.tracker.current and self.cfg.get("phone_summary")
+        if live or time.time() - self.last_auto_sync >= 10 * 60 - 5:
             self.sync_now()
         if time.time() - self.cfg.get("save_last", 0) >= 24 * 3600:  # saves: a full check once a day
             self.sync_saves()
@@ -398,7 +399,6 @@ class Controller(QObject):
             self.sync_saves(manual=True)
         if not w or self.syncing:
             return
-        from .summary import NAME, THUMB_BATCH, build_summary, content_hash, encode_summary, make_thumb, thumb_name
         from .sync import WebDAV, digest, encode, export_payload, run_sync, unprotect  # only when sync is on
         self.last_auto_sync = time.time()
         self.tracker.flush()
@@ -406,13 +406,16 @@ class Controller(QObject):
         payload = export_payload(self.db, me)
         h = digest(payload)
         upload = encode(payload) if h != self.cfg.get("sync_hash") else None
-        names = dict(self.cfg.get("sync_devices", {}), **{self.db.device: me})
-        covers = {g: c for g, c in self.db.covers().items() if (COVERS / c).exists()}
-        summary = build_summary(self.db, self.platform_of, names, covers=covers)
-        thumbs = {"files": {thumb_name(c): COVERS / c for c in covers.values()}, "make": make_thumb,
-                  "batch": THUMB_BATCH}
-        sh = content_hash(summary)
-        extra = {NAME: encode_summary(summary)} if sh != self.cfg.get("summary_hash") else {}
+        extra, thumbs, sh = {}, None, None
+        if self.cfg.get("phone_summary"):  # only for the WeChat mini program (shelved): off by default
+            from .summary import NAME, THUMB_BATCH, build_summary, content_hash, encode_summary, make_thumb, thumb_name
+            names = dict(self.cfg.get("sync_devices", {}), **{self.db.device: me})
+            covers = {g: c for g, c in self.db.covers().items() if (COVERS / c).exists()}
+            summary = build_summary(self.db, self.platform_of, names, covers=covers)
+            thumbs = {"files": {thumb_name(c): COVERS / c for c in covers.values()}, "make": make_thumb,
+                      "batch": THUMB_BATCH}
+            sh = content_hash(summary)
+            extra = {NAME: encode_summary(summary)} if sh != self.cfg.get("summary_hash") else {}
         try:
             client = WebDAV(w["url"], w["user"], unprotect(w["pass"]))
         except Exception as e:  # e.g. config copied from another Windows user: DPAPI can't decrypt
@@ -440,7 +443,7 @@ class Controller(QObject):
         else:
             blobs, tags = result
             devices = live_devices(self.cfg.get("sync_devices", {}), tags)  # drop devices whose file is gone
-            changed = 0
+            changed, idle_elsewhere = 0, False
             for blob in blobs.values():
                 try:
                     p = decode(blob)
@@ -449,6 +452,7 @@ class Controller(QObject):
                 changed += merge_payload(self.db, p)
                 devices[p.get("device", "?")] = p.get("name", "?")
                 self.remote_open[p.get("name", "?")] = p.get("open_game") or {}
+                idle_elsewhere = idle_elsewhere or not p.get("open_game")
             self.cfg.update(sync_tags=tags, sync_devices=devices, sync_error="", last_sync=time.time())
             if uploaded_hash:
                 self.cfg["sync_hash"] = uploaded_hash
@@ -457,7 +461,7 @@ class Controller(QObject):
             save_config(self.cfg)
             if changed:
                 self.changed()
-            if blobs:  # another device synced (e.g. the Deck after closing a game): its saves may be newer
+            if idle_elsewhere:  # another device synced with no game open (e.g. the Deck just closed one)
                 QTimer.singleShot(2000, self.sync_saves)
         if self.window:
             self.window.refresh_sync_state()

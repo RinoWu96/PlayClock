@@ -13,13 +13,10 @@ import ctypes
 import gzip
 import hashlib
 import json
-import urllib.error
-import urllib.parse
-import urllib.request
-import xml.etree.ElementTree as ET
 from ctypes import wintypes as wt
 
 from .db import DB
+from .savesync import DavStorage, StorageError
 
 FORMAT = 1
 JIANGUOYUN = "https://dav.jianguoyun.com/dav/"
@@ -108,73 +105,21 @@ def merge_payload(db: DB, p: dict) -> int:
 # --------------------------------------------------------------------------- WebDAV
 
 
-class SyncError(Exception):
-    pass
+SyncError = StorageError  # one WebDAV client for play records and saves: savesync.DavStorage
 
 
-class WebDAV:
-    """Minimal blocking WebDAV client (PROPFIND / MKCOL / GET / PUT) on the standard library."""
-
-    def __init__(self, url: str, user: str, password: str, timeout: float = 30):
-        self.base = url.rstrip("/") + "/"
-        self.auth = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
-        self.timeout = timeout
-
-    def _url(self, path: str) -> str:
-        return self.base + "/".join(urllib.parse.quote(p) for p in path.strip("/").split("/") if p)
-
-    def request(self, method: str, path: str, data: bytes | None = None, headers: dict | None = None):
-        req = urllib.request.Request(self._url(path), data=data, method=method,
-                                     headers={"Authorization": self.auth, "User-Agent": "PlayClock", **(headers or {})})
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                return r.status, r.read()
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
-                raise SyncError("auth") from e
-            return e.code, e.read()
-        except (urllib.error.URLError, OSError) as e:
-            raise SyncError(f"network: {e}") from e
-
-    def check(self):
-        status, _ = self.request("PROPFIND", "", headers={"Depth": "0"})
-        if status not in (200, 207):
-            raise SyncError(f"HTTP {status}")
-
-    def ensure_dir(self, path: str):
-        status, _ = self.request("MKCOL", path)
-        if status not in (200, 201, 405):  # 405 = already exists
-            raise SyncError(f"MKCOL {path}: HTTP {status}")
+class WebDAV(DavStorage):
+    """The device-file sync's view of DavStorage: a listing of file versions, GET that must succeed."""
 
     def listing(self, path: str) -> dict[str, str]:
-        """File name -> version tag (etag, else last-modified + size) for files directly in `path`."""
-        status, body = self.request("PROPFIND", path + "/", headers={"Depth": "1"})
-        if status == 404:
-            return {}
-        if status not in (200, 207):
-            raise SyncError(f"PROPFIND {path}: HTTP {status}")
-        ns = {"d": "DAV:"}
-        out = {}
-        for resp in ET.fromstring(body).findall("d:response", ns):
-            href = urllib.parse.unquote(resp.findtext("d:href", "", ns)).rstrip("/")
-            prop = resp.find(".//d:prop", ns)
-            if prop is None or prop.find("d:resourcetype/d:collection", ns) is not None:
-                continue
-            tag = (prop.findtext("d:getetag", "", ns) or
-                   prop.findtext("d:getlastmodified", "", ns) + prop.findtext("d:getcontentlength", "", ns))
-            out[href.rsplit("/", 1)[-1]] = tag
-        return out
+        """File name -> version tag for files directly in `path`."""
+        return self.entries(path)[0]
 
-    def get(self, path: str) -> bytes:
-        status, body = self.request("GET", path)
-        if status != 200:
-            raise SyncError(f"GET {path}: HTTP {status}")
-        return body
-
-    def put(self, path: str, data: bytes):
-        status, _ = self.request("PUT", path, data=data, headers={"Content-Type": "application/octet-stream"})
-        if status not in (200, 201, 204):
-            raise SyncError(f"PUT {path}: HTTP {status}")
+    def get(self, path: str) -> bytes:  # type: ignore[override]
+        got = super().get(path)
+        if got is None:
+            raise SyncError(f"GET {path}: HTTP 404")
+        return got[0]
 
 
 def run_sync(client: WebDAV, device: str, upload: bytes | None, known: dict[str, str],

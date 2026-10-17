@@ -159,10 +159,10 @@ SQLite 文件 `data/playtime.db`。
   3. 回到主线程合并。
 
   网络操作都在后台线程里做，数据库只在主线程读写。
-- **频率**：启动 5 秒后、每 10 分钟、打开窗口时、以及点「立即同步」时各同步一次。
+- **频率**：启动 5 秒后、每 10 分钟、打开窗口时、以及点「立即同步」时各同步一次。（开启了给小程序的汇总 `phone_summary` 时，玩游戏期间改为每 2 分钟一次。）
 - **密码**：用 Windows DPAPI（`CryptProtectData`）加密后保存在 `config.json` 里，只有当前 Windows 用户能解密。
 - **测试**：`tests/test_sync.py` 用 wsgidav 在本机启动一个真正的 WebDAV 服务器，跑完整的双设备同步。
-- **给小程序的文件**（`summary.py`）：微信小程序不能发 PROPFIND，所以每次同步电脑端还会写两样东西，小程序只用普通 GET 读取：
+- **给小程序的文件**（`summary.py`，小程序暂停开发，所以**默认不生成**；`config.json` 里 `"phone_summary": true` 才打开）：微信小程序不能发 PROPFIND，所以开启后每次同步电脑端还会写两样东西，小程序只用普通 GET 读取：
   - `PlayClock/summary.json`：汇总好的统计（正在玩、每日时长、游戏列表等），内容没变就不重新上传。每个有封面的游戏带 `"cover": "covers/<id>.jpg"`。
   - `PlayClock/covers/<id>.jpg`：封面缩略图，从 `data/covers/<id>.png` 居中裁成 460×215（Steam 横幅比例）的 JPEG（质量 82）。只上传远端还没有的，每次同步最多 60 张，封面多时分几次传完。换封面会得到新的文件名，所以小程序端按文件名永久缓存。
   - 小程序（`miniprogram/utils/covers.js`）用 `wx.downloadFile`（带 Basic 认证）把缩略图下载到 `wx.env.USER_DATA_PATH/covers/`，同时最多 4 个；下载失败的 5 分钟后重试；不再用到的缓存文件会删除。没下载到之前显示首字母头像。
@@ -172,7 +172,7 @@ SQLite 文件 `data/playtime.db`。
 
 单个 Python 文件，只用标准库，作为 systemd 用户服务运行，没有界面。安装和使用见 `deck/README.md`。
 
-- **Steam 快捷方式**：EmuDeck 用 Steam ROM Manager 把每个游戏加成「非 Steam 游戏」，从 Steam 启动时，模拟器进程的环境变量里有 `SteamGameId`。对快捷方式来说，它是 64 位游戏 ID，等于 `(appid << 32) | 0x02000000`；如果读到的是负数（按有符号整数打印的），先加上 2^64 再算。用它右移 32 位得到的 appid，在 `userdata/*/config/shortcuts.vdf`（旧式二进制 KeyValues：类型字节 + 以 ` ` 结尾的键名；`appid` 是有符号 32 位整数）里找到快捷方式，用它的 `AppName`，也就是 Steam 库里显示的名字，作为游戏名；Title ID 也可以从快捷方式的启动参数里取。`localconfig.vdf` 里 Steam 记录的这些快捷方式的 `Playtime`（分钟），按 appid（64 位 ID 先折算成 appid）作为导入来源之一。
+- **Steam 快捷方式**：EmuDeck 用 Steam ROM Manager 把每个游戏加成「非 Steam 游戏」，从 Steam 启动时，模拟器进程的环境变量里有 `SteamGameId`。对快捷方式来说，它是 64 位游戏 ID，等于 `(appid << 32) | 0x02000000`；如果读到的是负数（按有符号整数打印的），先加上 2^64 再算。用它右移 32 位得到的 appid，在 `userdata/*/config/shortcuts.vdf`（旧式二进制 KeyValues：类型字节 + 以 `\0` 结尾的键名；`appid` 是有符号 32 位整数）里找到快捷方式，用它的 `AppName`，也就是 Steam 库里显示的名字，作为游戏名；Title ID 也可以从快捷方式的启动参数里取。`localconfig.vdf` 里 Steam 记录的这些快捷方式的 `Playtime`（分钟），按 appid（64 位 ID 先折算成 appid）作为导入来源之一。
 - **识别**：每 10 秒扫描一次 `/proc` 里当前用户的进程，按进程名或可执行文件名匹配模拟器（只看这两项、不看参数，所以 EmuDeck 的启动脚本 `bash …/launchers/xxx.sh` 不会被当成模拟器）。游戏名取启动参数里最后一个扩展名对得上的 ROM 路径，再去掉 `(…)`、`[…]` 标签和末尾的版本号；RPCS3 的 `…/<游戏目录>/USRDIR/EBOOT.BIN` 取游戏目录名。Ryujinx 改读 `~/.config/Ryujinx/Logs`（或 AppImage 旁边的 `portable/Logs`）里最新的日志，规则和 Windows 版的 `emulog.py` 相同，暂停期间不计时。
 - **计时**：规则和 Windows 版相同。两次检查之间超过 max(3×间隔, 30 秒) 视为休眠，不计入；短于 60 秒的会话丢弃并留下删除标记；180 秒内重新打开同一个游戏，接着上一次会话计时。游戏进行中每 60 秒写一次本机文件。
 - **记录格式**：每条会话的字段和 PlayClock 完全相同（`uid`、`game`、`emulator`、`start`、`end`、`seconds`、`source`、`device`、`updated`）；模拟器名用 Windows 规则里的名字，所以电脑端能把它对应到平台（比如 melonDS 对应 NDS）。

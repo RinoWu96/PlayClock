@@ -26,10 +26,7 @@ Ryujinx、yuzu 系（citron / eden / sudachi…）、Citra 系（Azahar / Lime3D
    ```
 3. 按提示输入坚果云账号、应用密码和设备名称（默认是主机名）。连接成功后它就会在后台运行。
 
-还在测试的版本用这条命令安装（来自 `feature/deck` 分支）：
-```bash
-curl -fsSL https://raw.githubusercontent.com/RinoWu96/PlayClock/feature/deck/deck/install.sh | PLAYCLOCK_BRANCH=feature/deck bash
-```
+已经装过的话，再运行一次同一条命令就会更新到最新版（保留设置和记录）。
 
 ## 常用命令
 ```bash

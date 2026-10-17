@@ -20,8 +20,13 @@ else
         -o "$APP_DIR/savesync.py"
 fi
 
-# Ask for the WebDAV account once (reads from the terminal even when piped from curl).
-python3 "$APP_DIR/playclock_deck.py" setup < /dev/tty
+# Ask for the WebDAV account once (reads from the terminal even when piped from curl); an update keeps it.
+CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/playclock/config.json"
+if [ -f "$CONFIG" ] && grep -q '"webdav"' "$CONFIG"; then
+    echo "Updating: keeping your account and settings ($CONFIG)."
+else
+    python3 "$APP_DIR/playclock_deck.py" setup < /dev/tty
+fi
 
 cat > "$UNIT_DIR/playclock-deck.service" <<'UNIT'
 [Unit]
@@ -38,7 +43,8 @@ WantedBy=default.target
 UNIT
 
 systemctl --user daemon-reload
-systemctl --user enable --now playclock-deck.service
+systemctl --user enable playclock-deck.service
+systemctl --user restart playclock-deck.service   # (re)start: an update must load the new code
 echo
 echo "PlayClock is running in the background, in Game Mode too."
 echo "  status:   python3 $APP_DIR/playclock_deck.py status"

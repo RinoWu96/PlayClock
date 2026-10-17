@@ -196,7 +196,7 @@ class DavStorage:
 
     def _req(self, method: str, path: str, data: bytes | None = None, headers: dict | None = None):
         url = self.base + "/".join(urllib.parse.quote(p) for p in path.strip("/").split("/") if p)
-        if method == "PROPFIND":
+        if method == "PROPFIND" and not url.endswith("/"):
             url += "/"
         req = urllib.request.Request(url, data=data, method=method,
                                      headers={"Authorization": self.auth, "User-Agent": self.agent, **(headers or {})})
@@ -214,6 +214,12 @@ class DavStorage:
             return e.code, e.read(), e.headers
         except (urllib.error.URLError, OSError) as e:
             raise StorageError(f"network: {e}") from e
+
+    def check(self) -> None:
+        """Can we log in? Raises StorageError("auth") for a wrong account / app password."""
+        status, _, _ = self._req("PROPFIND", "", headers={"Depth": "0"})
+        if status not in (200, 207):
+            raise StorageError(f"HTTP {status}")
 
     def ensure_dir(self, folder: str) -> None:
         parts = folder.strip("/").split("/")
@@ -391,7 +397,7 @@ class SaveSync:
 
     # --- one game --------------------------------------------------------------
     def sync_game(self, title: str, s: SaveDir | None = None, allow_restore: bool = True,
-                  allow_upload: bool = True, prefetched: tuple | None = None) -> str:
+                  prefetched: tuple | None = None) -> str:
         """Bring one game in line with the cloud; returns what happened (the decide() word, or "busy").
         `prefetched`: (head, etag) already fetched (sync(quick=True) gets them all in parallel)."""
         s = s or self.local().get(title)
@@ -404,10 +410,7 @@ class SaveSync:
             if action == "synced":
                 g["base"] = local
             elif action == "upload":
-                if allow_upload:
-                    head = self._upload(title, s, head, etag)
-                else:
-                    status, g["pending"] = "pending_upload", True
+                head = self._upload(title, s, head, etag)
             elif action == "restore":
                 if allow_restore:
                     self._restore(title, s, head)
@@ -477,15 +480,13 @@ class SaveSync:
         self.storage.put(f"{folder}/{name}", pack(files, self.meta(title, h, sum(map(len, files.values())))))
         g["conflict"] = {"hash": h, "file": name, "time": now}
 
-    def _restore(self, title: str, s: SaveDir, head: dict, blob: bytes | None = None) -> None:
+    def _restore(self, title: str, s: SaveDir, head: dict) -> None:
         if self.busy():
             raise Busy(title)
-        if blob is None:
-            got = self.storage.get(f"{self.folder(title)}/{head['file']}")
-            if got is None:
-                raise StorageError(f"missing {head['file']}")
-            blob = got[0]
-        files, _meta = unpack(blob)
+        got = self.storage.get(f"{self.folder(title)}/{head['file']}")
+        if got is None:
+            raise StorageError(f"missing {head['file']}")
+        files, _meta = unpack(got[0])
         h = files_hash(files)
         if h != head["hash"]:
             raise StorageError(f"{head['file']}: content does not match its hash")
@@ -583,11 +584,11 @@ class SaveSync:
             self.save_state()
         return out
 
-    def upload_if_changed(self, title: str, min_interval: float = 0) -> bool:
-        """For uploads while a game runs (Deck): only if the save changed and min_interval has passed."""
+    def upload_if_changed(self, title: str) -> bool:
+        """For uploads while a game runs (Deck): only if the save changed since it last matched the cloud."""
         s = self.local().get(title)
         g = self.game(title)
-        if not s or time.time() - g.get("last_upload", 0) < min_interval:
+        if not s:
             return False
         if self.local_hash(s) == g.get("base"):
             return False
