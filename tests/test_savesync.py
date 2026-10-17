@@ -290,3 +290,15 @@ def test_quick_check_before_a_launch(tmp_path, dav):
     pc.sync()
     assert deck.sync(quick=True) == {ZELDA: "restore", MARIO: "synced"}
     assert content(deck.root, "0000000000000002") == V2
+
+
+def test_a_device_can_ignore_games_it_does_not_have(tmp_path, dav):
+    pc = device(tmp_path, dav, "PC", {"0000000000000004": (ZELDA, V1), "0000000000000005": (MARIO, V1)})
+    deck = device(tmp_path, dav, "Deck", {"0000000000000002": (ZELDA, V1)}, cloud_only=False)
+    pc.sync()
+    deck.state["games"][MARIO] = {"status": "needs_local"}          # left by an older version
+    deck.remote_titles = lambda: pytest.fail("the Deck listed the cloud's games")
+    assert deck.sync() == {ZELDA: "synced"}
+    assert MARIO not in deck.state["games"]
+    pc_view = device(tmp_path, dav, "PC2", {}, cloud_only=True)
+    assert pc_view.sync() == {ZELDA: "needs_local", MARIO: "needs_local"}   # the PC still lists them

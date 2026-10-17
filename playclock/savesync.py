@@ -328,11 +328,13 @@ class SaveSync:
     `busy()` must say whether a Ryujinx game may have the saves open; it is asked again right before any write."""
 
     def __init__(self, root: Path, storage, state_path: Path, backup_dir: Path, device: str, device_name: str,
-                 busy=lambda: False, user: str | None = None, quota_up: int = QUOTA_UP):
+                 busy=lambda: False, user: str | None = None, quota_up: int = QUOTA_UP, cloud_only: bool = True):
+        """cloud_only: on a full check also list the games that only other devices have (the PC shows them as
+        "start it here once"); the Deck leaves them alone and spends nothing on them."""
         self.root, self.storage, self.state_path, self.backup_dir = Path(root), storage, Path(state_path), backup_dir
         self.device, self.device_name, self.busy = device, device_name, busy
         self.user = (user or profile_user(self.root)).lower()
-        self.quota_up = quota_up
+        self.quota_up, self.cloud_only = quota_up, cloud_only
         try:
             self.state = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -566,37 +568,54 @@ class SaveSync:
 
     # --- everything ------------------------------------------------------------
     def sync(self, allow_restore: bool = True, titles: list[str] | None = None, quick: bool = False) -> dict[str, str]:
-        """Sync every local save (or `titles`); games only in the cloud are reported as needs_local.
-        quick: just the local games' heads, fetched in parallel, no conflict listing — for a game about to start."""
+        """Sync every local save (or `titles`); on a full check, games only in the cloud are reported as needs_local.
+        The cloud is read in parallel first (each game's head; on a full check also its conflict files and the list
+        of games in the cloud): about one round trip instead of two per game. Writes stay one game at a time.
+        quick: heads only, for a game about to start."""
+        from concurrent.futures import ThreadPoolExecutor
         local = self.local()
-        out = {}
-        heads: dict[str, tuple] = {}
-        if quick:
-            from concurrent.futures import ThreadPoolExecutor
-            titles = sorted(local)
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                for title, got in zip(titles, pool.map(self.head, titles)):
-                    heads[title] = got
-        for title in titles or sorted(local):
+        full = titles is None and not quick
+        todo = sorted(local) if titles is None else titles
+
+        def fetch(job):
+            kind, title = job
             try:
-                out[title] = self.sync_game(title, local.get(title), allow_restore=allow_restore,
-                                            prefetched=heads.get(title))
-                if titles is None:  # full check: also notice versions other devices left for a user to choose
+                if kind == "head":
+                    return self.head(title)
+                return self.conflicts(title) if kind == "conflicts" else self.remote_titles()
+            except StorageError as e:
+                return e
+
+        jobs = [("head", t) for t in todo]
+        if full:
+            jobs += [("conflicts", t) for t in todo] + ([("titles", "")] if self.cloud_only else [])
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            got = dict(zip(jobs, pool.map(fetch, jobs)))
+        out = {}
+        for title in todo:
+            try:
+                head = got[("head", title)]
+                if isinstance(head, StorageError):
+                    raise head
+                out[title] = self.sync_game(title, local.get(title), allow_restore=allow_restore, prefetched=head)
+                conflicts = got.get(("conflicts", title))
+                if full and not isinstance(conflicts, StorageError):  # versions other devices left to choose from
                     mine = (self.game(title).get("conflict") or {}).get("file")
-                    self.game(title)["remote_conflicts"] = len([c for c in self.conflicts(title) if c["file"] != mine])
+                    self.game(title)["remote_conflicts"] = len([c for c in conflicts if c["file"] != mine])
             except StorageError as e:
                 if str(e) == "auth" or str(e).startswith("network"):
                     raise
                 self.game(title)["status"] = out[title] = f"error: {e}"
                 self.save_state()
-        if titles is None:
-            try:
-                for title in self.remote_titles():
-                    if title not in local and title not in out:
-                        self.game(title)["status"] = out[title] = "needs_local"
-            except StorageError:
-                pass
-            self.save_state()
+        remote = got.get(("titles", ""))
+        if full and self.cloud_only and not isinstance(remote, StorageError):
+            for title in remote:
+                if title not in local and title not in out:
+                    self.game(title)["status"] = out[title] = "needs_local"
+        elif full and not self.cloud_only:  # forget games this device doesn't have (left by older versions)
+            for title in [t for t, g in self.state["games"].items() if t not in local and g.get("status") == "needs_local"]:
+                del self.state["games"][title]
+        self.save_state()
         return out
 
     def upload_if_changed(self, title: str) -> bool:

@@ -97,17 +97,54 @@ const STATUS: Record<string, string> = {
   synced: "已同步",
   upload: "已上传",
   restore: "已从云端恢复",
-  conflict: "冲突：两边都有新进度",
-  needs_local: "这台 Deck 还没有它的存档（先启动一次游戏）",
-  pending_restore: "云端有更新的存档，关闭 Ryujinx 后恢复",
+  pending_restore: "关闭 Ryujinx 后恢复",
   pending_upload: "待上传",
 };
 
+/** One short word or phrase per game. */
 function statusText(g: Game): string {
-  if (g.conflict) return g.mine ? "冲突：两边都有新进度" : "冲突：另一台设备上传了不同的进度";
+  if (g.conflict) return "冲突，需要选择";
   if (g.status === "restore" && g.restored_from) return `已从 ${g.restored_from} 恢复`;
-  const base = STATUS[g.status] ?? g.status;
-  return g.cloud_device ? `${base} · 云端：${g.cloud_device} ${ago(g.cloud_time)}` : base;
+  if (g.status.startsWith("error")) return "出错，稍后重试";
+  return STATUS[g.status] ?? g.status;
+}
+
+function GamesModal(props: { closeModal?: () => void; games: Game[]; ask: (title: string, keep: string) => void }) {
+  return (
+    <ModalRoot closeModal={props.closeModal} onCancel={props.closeModal}>
+      <DialogHeader>这台 Deck 上的存档</DialogHeader>
+      <DialogBody>
+        {props.games.length === 0 && <Field description="还没有 Ryujinx 存档。" />}
+        {props.games.map((g) => (
+          <div key={g.title}>
+            <Field label={g.name} description={statusText(g)} />
+            {g.conflict && (
+              <Focusable style={{ display: "flex", gap: "8px", margin: "4px 0 12px" }}>
+                <DialogButton
+                  onClick={() => {
+                    props.ask(g.title, "cloud");
+                    props.closeModal?.();
+                  }}
+                >
+                  用云端的
+                </DialogButton>
+                {g.mine && (
+                  <DialogButton
+                    onClick={() => {
+                      props.ask(g.title, "local");
+                      props.closeModal?.();
+                    }}
+                  >
+                    用这台 Deck 的
+                  </DialogButton>
+                )}
+              </Focusable>
+            )}
+          </div>
+        ))}
+      </DialogBody>
+    </ModalRoot>
+  );
 }
 
 const mb = (b: number) => `${(b / 1024 / 1024).toFixed(1)} MB`;
@@ -209,6 +246,7 @@ function Content() {
     );
 
   const live = state.live ?? {};
+  const conflicts = (state.games ?? []).filter((g) => g.conflict).length;
   const s = state.settings!;
   const change = async (key: keyof Settings, value: boolean | number) => setState(await setSetting(key, value));
   const ask = async (action: string, title = "", keep = "") => {
@@ -275,35 +313,21 @@ function Content() {
             onChange={(v) => change("save_sync", v)}
           />
         </PanelSectionRow>
-        {s.save_sync &&
-          (state.games ?? []).filter((g) => g.status !== "needs_local").map((g) => (
-            <div key={g.title}>
-              <PanelSectionRow>
-                <Field label={g.name} description={statusText(g)} />
-              </PanelSectionRow>
-              {g.conflict && (
-                <>
-                  <PanelSectionRow>
-                    <ButtonItem layout="below" onClick={() => ask("resolve", g.title, "cloud")}>
-                      用云端的版本
-                    </ButtonItem>
-                  </PanelSectionRow>
-                  {g.mine && (
-                    <PanelSectionRow>
-                      <ButtonItem layout="below" onClick={() => ask("resolve", g.title, "local")}>
-                        用这台 Deck 的版本
-                      </ButtonItem>
-                    </PanelSectionRow>
-                  )}
-                </>
-              )}
-            </div>
-          ))}
-        {s.save_sync && (state.games ?? []).some((g) => g.status === "needs_local") && (
+        {s.save_sync && conflicts > 0 && (
           <PanelSectionRow>
-            <Field
-              description={`另外 ${(state.games ?? []).filter((g) => g.status === "needs_local").length} 个游戏只在其他设备上有存档：在这台 Deck 上启动一次后就会同步。`}
-            />
+            <Field label={`${conflicts} 个游戏有冲突`} description="两台设备都有新进度，点下面的按钮选择保留哪一份" />
+          </PanelSectionRow>
+        )}
+        {s.save_sync && (
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              onClick={() =>
+                showModal(<GamesModal games={state.games ?? []} ask={(title, keep) => ask("resolve", title, keep)} />)
+              }
+            >
+              {`各游戏存档（${(state.games ?? []).length} 个）`}
+            </ButtonItem>
           </PanelSectionRow>
         )}
         {s.save_sync && state.traffic && (

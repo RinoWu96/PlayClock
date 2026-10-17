@@ -815,20 +815,21 @@ class Agent:
         except OSError:
             return 0.0
 
-    def reload_config(self) -> bool:
-        """Re-read config.json if it changed (settings, account, device name). True when it did."""
+    def reload_config(self) -> set[str]:
+        """Re-read config.json if it changed (settings, account, device name); returns the keys that changed."""
         mtime = self._mtime()
         if mtime == self.config_mtime:
-            return False
+            return set()
         self.config_mtime = mtime
         cfg = read_json(self.config_path, None)
         if not isinstance(cfg, dict):
-            return False  # half-written: next poll
+            return set()  # half-written: next poll
         cfg["device_id"] = self.cfg["device_id"]  # never changes
+        changed = {k for k in set(cfg) | set(self.cfg) if cfg.get(k) != self.cfg.get(k)}
         self.cfg = cfg
         log("settings changed: " + ", ".join(f"{k}={self.setting(k)}" for k in DEFAULTS))
         self.start_threads()
-        return True
+        return changed
 
     def start_threads(self) -> None:
         """The launch guard and sleep watcher exist once save sync has been on; they follow the settings."""
@@ -941,7 +942,7 @@ class Agent:
         quota = int(self.setting("quota_mb")) * 2 ** 20 or 1 << 62  # 0: no limit
         return savesync.SaveSync(self.save_root(), storage, CONFIG_DIR / "save_sync.json",
                                  self.data_dir / "save_backups" / "ryujinx", self.store.device, self.name, busy=busy,
-                                 quota_up=quota)
+                                 quota_up=quota, cloud_only=False)  # games not on this Deck: not read at all
 
     def sync_saves(self, restore: bool = True, titles: list[str] | None = None, timeout: float = 20,
                    ignore_ryujinx: bool = False, why: str = "", quick: bool = False) -> dict:
@@ -1034,7 +1035,8 @@ class Agent:
             self.sync_saves(restore=not ryujinx_pids(), why="start")
         last_sync = 0.0
         while True:
-            if self.reload_config() and self.saves_enabled():
+            changed = self.reload_config()
+            if changed & {"save_sync", "webdav"} and self.saves_enabled():  # turned on / another account
                 self.sync_saves(restore=not ryujinx_pids(), why="settings")
             self.handle_requests()
             now = time.time()

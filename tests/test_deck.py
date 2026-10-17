@@ -326,7 +326,8 @@ def test_plugin_controls_settings_requests_and_live_status(tmp_path, dav_server,
     os.utime(cfg_path, (1, 1))
     agent.config_mtime = agent._mtime()
     cfg_path.write_text(json.dumps(dict(cfg, save_sync=True, save_every=0)))
-    assert agent.reload_config() and agent.saves_enabled() and agent.setting("save_every") == 0
+    assert agent.reload_config() == {"save_sync", "save_every"} and agent.saves_enabled()
+    assert agent.setting("save_every") == 0
     assert agent.cfg["device_id"] == "deck1"
 
     # first sync: the two versions conflict; the plugin asks to keep the cloud's (the PC's)

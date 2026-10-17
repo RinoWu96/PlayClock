@@ -101,6 +101,8 @@ class Plugin:
             decky.logger.exception("game names")
         games = []
         for title, g in sorted(saves.get("games", {}).items()):
+            if g.get("status") == "needs_local":
+                continue  # a game this Deck doesn't have: not shown
             head = g.get("head") or {}
             games.append({
                 "title": title, "name": names.get(title) or head.get("game") or title, "status": g.get("status", ""),
