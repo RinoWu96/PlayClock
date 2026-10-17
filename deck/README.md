@@ -28,6 +28,15 @@ Ryujinx、yuzu 系（citron / eden / sudachi…）、Citra 系（Azahar / Lime3D
 
 已经装过的话，再运行一次同一条命令就会更新到最新版（保留设置和记录）。
 
+## 快捷菜单插件（可选，需要 Decky Loader）
+装了 Decky Loader 的话，可以再装一个 PlayClock 插件，在游戏模式的快捷菜单（「…」键）里查看和设置：今天玩了多久、立即同步、当前用的云端和修改账号、Ryujinx 存档同步的开关和参数，以及全屏的「存档管理」页（每个游戏的状态、冲突选择、历史版本恢复）。
+
+1. 先按上面的步骤装好后台程序（插件只是它的控制面板，记录和同步都由后台程序完成）。
+2. 从 [Releases](https://github.com/RinoWu96/PlayClock/releases/latest) 下载 `PlayClock-Decky.zip`，放到 Deck 上。
+3. 在 Decky 的设置里打开「开发者模式」，然后在「开发者」页选择「从 ZIP 文件安装插件」，选中这个 zip。
+
+插件不需要 root 权限。更新时用新的 zip 再装一次即可。
+
 ## 常用命令
 ```bash
 python3 ~/.local/share/playclock-deck/playclock_deck.py status   # 现在在玩什么、记录了多少、上次同步
