@@ -276,7 +276,7 @@ function Content() {
           />
         </PanelSectionRow>
         {s.save_sync &&
-          (state.games ?? []).map((g) => (
+          (state.games ?? []).filter((g) => g.status !== "needs_local").map((g) => (
             <div key={g.title}>
               <PanelSectionRow>
                 <Field label={g.name} description={statusText(g)} />
@@ -299,6 +299,13 @@ function Content() {
               )}
             </div>
           ))}
+        {s.save_sync && (state.games ?? []).some((g) => g.status === "needs_local") && (
+          <PanelSectionRow>
+            <Field
+              description={`另外 ${(state.games ?? []).filter((g) => g.status === "needs_local").length} 个游戏只在其他设备上有存档：在这台 Deck 上启动一次后就会同步。`}
+            />
+          </PanelSectionRow>
+        )}
         {s.save_sync && state.traffic && (
           <PanelSectionRow>
             <Field label="本月流量" description={`上传 ${mb(state.traffic.up)} · 下载 ${mb(state.traffic.down)}`} />

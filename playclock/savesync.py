@@ -30,7 +30,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -255,6 +254,7 @@ class DavStorage:
         ns = {"d": "DAV:"}
         own = urllib.parse.unquote(urllib.parse.urlparse(self.base).path).rstrip("/") + "/" + folder.strip("/")
         files, dirs = {}, []
+        import xml.etree.ElementTree as ET  # here, not at the top: Decky's bundled Python has no xml.etree
         for resp in ET.fromstring(body).findall("d:response", ns):
             href = urllib.parse.unquote(urllib.parse.urlparse(resp.findtext("d:href", "", ns)).path).rstrip("/")
             if href == own.rstrip("/"):

@@ -38,7 +38,7 @@ import time
 import uuid
 from pathlib import Path
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 HOME = Path.home()
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "playclock"
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local" / "share") / "playclock"
