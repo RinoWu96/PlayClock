@@ -380,6 +380,59 @@ EN = {
     "选择正在运行的游戏（先启动游戏再来选）：": "Choose the running game (start it first):",
     "不再为「{game}」自动计时吗？已有的游玩记录会保留。":
         "Stop timing \"{game}\" automatically? Its existing records are kept.",
+    # Ryujinx save sync
+    "存档同步（Ryujinx）": "Save sync (Ryujinx)",
+    "立即同步存档": "Sync saves now",
+    "在这台电脑和 Steam Deck 之间同步 Ryujinx 存档": "Sync Ryujinx saves between this PC and the Steam Deck",
+    "和 Steam 云存档一样：关闭游戏后上传这个游戏的存档；云端有更新的存档时，在 Ryujinx 关闭的情况下自动恢复，恢复前先备份本机存档。两边都有新进度时不会自动覆盖，由你选择保留哪一份。":
+        "Like Steam Cloud: a game's save is uploaded after you close it; a newer save in the cloud is restored "
+        "automatically while Ryujinx is closed, after backing up the local one. When both devices have new "
+        "progress, nothing is overwritten: you choose which one to keep.",
+    "需要先开启上面的云同步。": "Turn on cloud sync above first.",
+    "没有找到 Ryujinx 的存档文件夹。": "Ryujinx's save folder wasn't found.",
+    "存档文件夹：{root}\n本月流量：上传 {up}，下载 {down}": "Save folder: {root}\nThis month: {up} up, {down} down",
+    "正在同步存档…": "Syncing saves…",
+    "上次存档同步失败：{e}": "Last save sync failed: {e}",
+    "已同步": "In sync",
+    "已上传": "Uploaded",
+    "已从云端恢复": "Restored from the cloud",
+    "已从 {device} 恢复": "Restored from {device}",
+    "冲突：两边都有新进度": "Conflict: new progress on both devices",
+    "冲突：另一台设备上传了不同的进度": "Conflict: another device uploaded different progress",
+    "这台电脑还没有它的存档（先在 Ryujinx 里启动一次）": "No save on this PC yet (start it once in Ryujinx)",
+    "云端有更新的存档，关闭 Ryujinx 后恢复": "Newer save in the cloud: restored when Ryujinx is closed",
+    "待上传": "Waiting to upload",
+    "选择保留哪一份…": "Choose which to keep…",
+    "历史版本…": "History…",
+    "历史版本": "History",
+    "存档同步失败：{e}": "Save sync failed: {e}",
+    "存档同步完成。": "Saves are in sync.",
+    "存档操作失败：{e}": "Save operation failed: {e}",
+    "已从云端恢复存档：{games}": "Saves restored from the cloud: {games}",
+    "这些游戏在两台设备上都有新进度，请在 设置 → 存档同步 里选择保留哪一份：{games}":
+        "These games have new progress on both devices. Choose which to keep under Settings → Save sync: {games}",
+    "云端有更新的存档，关闭 Ryujinx 后会自动恢复：{games}":
+        "Newer saves are in the cloud and will be restored once Ryujinx is closed: {games}",
+    "云端有更新的存档还没恢复：{games}。请先关闭 Ryujinx，恢复后再开始游戏。":
+        "Newer saves from the cloud aren't restored yet: {games}. Close Ryujinx first, then start the game.",
+    "{device} 上的《{game}》还开着（可能在休眠）。先在 {device} 上退出游戏，否则两边进度会冲突。":
+        "\"{game}\" is still open on {device} (maybe asleep). Quit it there first, or the two devices' progress "
+        "will conflict.",
+    "这台电脑": "This PC",
+    "请先关闭 Ryujinx 再操作存档。": "Close Ryujinx first, then try again.",
+    "《{game}》现在没有需要处理的冲突。": "\"{game}\" has no conflict to resolve now.",
+    "云端当前的版本：{device}，{time}": "The cloud's current version: {device}, {time}",
+    "{device} 的版本：{time}": "{device}'s version: {time}",
+    "选择保留哪一份存档": "Choose which save to keep",
+    "《{game}》在两台设备上都有新进度，只能保留一份。\n没选中的那份不会删除：本机的会留在备份里，也可以在「历史版本」里找回。":
+        "\"{game}\" has new progress on both devices; only one can be kept.\nThe other isn't lost: this PC's stays "
+        "in its backups, and versions can be brought back under History.",
+    "云端 · {device} · {time}": "Cloud · {device} · {time}",
+    "本机备份 · {time}": "Local backup · {time}",
+    "《{game}》还没有历史版本。": "\"{game}\" has no earlier versions yet.",
+    "用哪个版本替换《{game}》现在的存档？\n现在的存档会先备份。":
+        "Which version should replace \"{game}\"'s current save?\nThe current save is backed up first.",
+    "已恢复《{game}》的存档。": "\"{game}\"'s save was restored.",
     "手机查看": "On your phone",
     "开发中": "In development",
     "微信小程序（开发中）": "WeChat mini program (in development)",

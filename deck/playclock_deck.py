@@ -24,12 +24,17 @@ import calendar
 import getpass
 import gzip
 import hashlib
+import importlib.util
 import json
 import os
 import re
+import shutil
+import signal
 import socket
 import struct
+import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -502,9 +507,11 @@ class Store:
             elif any(row[k] != v for k, v in fields.items()):
                 row.update(fields, updated=time.time())
 
-    def payload(self, name: str) -> dict:
+    def payload(self, name: str, open_game: dict | None = None) -> dict:
+        """`open_game`: the game Ryujinx has open right now ({"id": title id, "since": t}), so the PC can warn
+        before the same game is played there (the Deck may be asleep with it open)."""
         return {"format": FORMAT, "device": self.device, "name": name, "sessions": self.sessions,
-                "aliases": [], "tombstones": self.tombstones,
+                "aliases": [], "tombstones": self.tombstones, "open_game": open_game,
                 "keys": [{"key": k, "game": v["game"], "updated": v["updated"]} for k, v in sorted(self.keys.items())]}
 
 
@@ -625,6 +632,136 @@ def encode(payload: dict) -> bytes:
     return gzip.compress(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8"), mtime=0)
 
 
+# --------------------------------------------------------------------------- Ryujinx save sync
+
+
+def load_savesync():
+    """savesync.py (shared with the Windows app, playclock/savesync.py) is installed next to this file."""
+    here = Path(__file__).resolve().parent
+    for folder in (here, here.parent / "playclock"):
+        path = folder / "savesync.py"
+        if path.is_file():
+            spec = importlib.util.spec_from_file_location("playclock_savesync", path)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod  # dataclasses look their module up there
+            spec.loader.exec_module(mod)
+            return mod
+    return None
+
+
+savesync = load_savesync()
+SAVE_EVERY = 15 * 60   # while a game runs, upload its save at most this often (and always when it closes)
+GUARD_FRESH = 60       # a launch is held only if the cloud wasn't checked within this many seconds
+
+
+def ryujinx_pids(procs=None) -> list[int]:
+    return [p[0] for p in (processes() if procs is None else procs)
+            if (m := match_emulator(p[1], p[2])) and m[0] == "Ryujinx"]
+
+
+def stopped(pid: int) -> bool:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "T"
+    except (OSError, IndexError):
+        return False
+
+
+class LaunchGuard(threading.Thread):
+    """Steam Cloud downloads before a game starts; EmuDeck starts Ryujinx through Steam, which we can't hook,
+    so: a Ryujinx process that just appeared is paused (SIGSTOP) for the second or two it takes to bring a newer
+    cloud save down, then continued. Polls only new pids once a second."""
+
+    def __init__(self, agent: "Agent"):
+        super().__init__(daemon=True)
+        self.agent = agent
+        self.known: set[int] = set()
+
+    def run(self) -> None:
+        for pid in ryujinx_pids():  # a previous agent may have died while holding one
+            if stopped(pid):
+                os.kill(pid, signal.SIGCONT)
+        self.known = {int(d) for d in os.listdir("/proc") if d.isdigit()}
+        while True:
+            time.sleep(1)
+            try:
+                self.poll()
+            except Exception as e:  # never take the agent down
+                log(f"launch guard: {e}")
+
+    def poll(self) -> None:
+        pids = {int(d) for d in os.listdir("/proc") if d.isdigit()}
+        new = pids - self.known
+        self.known = pids
+        if not new or not self.agent.saves_enabled():
+            return
+        fresh = []
+        for pid in new:
+            try:
+                comm = Path(f"/proc/{pid}/comm").read_text().strip()
+                args = Path(f"/proc/{pid}/cmdline").read_bytes().decode("utf-8", "replace").split("\0")
+            except OSError:
+                continue
+            if (m := match_emulator(comm, args)) and m[0] == "Ryujinx":
+                fresh.append(pid)
+        if not fresh or time.time() - self.agent.last_save_check < GUARD_FRESH:
+            return
+        held = []
+        try:
+            for pid in fresh:
+                os.kill(pid, signal.SIGSTOP)
+                held.append(pid)
+            log(f"Ryujinx starting: holding it while checking the cloud for newer saves")
+            self.agent.sync_saves(restore=True, timeout=4, ignore_ryujinx=True, why="launch")
+        except Exception as e:
+            log(f"launch check skipped: {e}")
+        finally:
+            for pid in held:
+                try:
+                    os.kill(pid, signal.SIGCONT)
+                except OSError:
+                    pass
+
+
+class SleepWatcher(threading.Thread):
+    """Best effort Dynamic-Cloud-Sync: just before the Deck sleeps, upload the open game's save if it changed.
+    Holds a logind delay inhibitor (at most InhibitDelayMaxSec, 5 s on SteamOS) while doing so."""
+
+    def __init__(self, agent: "Agent"):
+        super().__init__(daemon=True)
+        self.agent = agent
+        self.inhibitor = None
+
+    def hold(self) -> None:
+        if self.inhibitor is None or self.inhibitor.poll() is not None:
+            self.inhibitor = subprocess.Popen(
+                ["systemd-inhibit", "--what=sleep", "--mode=delay", "--who=PlayClock",
+                 "--why=Uploading the game save", "sleep", "infinity"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def release(self) -> None:
+        if self.inhibitor and self.inhibitor.poll() is None:
+            self.inhibitor.terminate()
+        self.inhibitor = None
+
+    def run(self) -> None:
+        if not (shutil.which("gdbus") and shutil.which("systemd-inhibit")):
+            return
+        mon = subprocess.Popen(["gdbus", "monitor", "--system", "--dest", "org.freedesktop.login1",
+                                "--object-path", "/org/freedesktop/login1"],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        self.hold()
+        for line in mon.stdout:
+            if "PrepareForSleep (true" in line:
+                try:
+                    game = self.agent.open_game
+                    if game and self.agent.saves_enabled():
+                        self.agent.upload_save(game["id"], min_interval=0, timeout=3, why="sleep")
+                finally:
+                    self.release()
+            elif "PrepareForSleep (false" in line:
+                self.hold()
+
+
 # --------------------------------------------------------------------------- app
 
 
@@ -638,6 +775,11 @@ class Agent:
         self.store = Store(data_dir / "sessions.json", self.cfg["device_id"])
         self.tracker = Tracker(self.store)
         self.detector = Detector()
+        self.data_dir = data_dir
+        self.save_lock = threading.Lock()   # the main loop, the launch guard and the sleep watcher share saves
+        self.last_save_check = 0.0          # last full comparison with the cloud
+        self.open_game: dict | None = None  # {"id": title id, "since": t} while Ryujinx has a game loaded
+        self.ryujinx_was_running = False
 
     @property
     def name(self) -> str:
@@ -659,7 +801,7 @@ class Agent:
         client = self.client()
         if not client:
             return "not set up (run: playclock_deck.py setup)"
-        blob = encode(self.store.payload(self.name))
+        blob = encode(self.store.payload(self.name, self.open_game))
         digest = hashlib.sha1(blob).hexdigest()
         if digest == self.store.last_upload and not force:
             self.store.last_sync = time.time()
@@ -673,8 +815,89 @@ class Agent:
         self.store.save()
         return f"uploaded {len(blob)} bytes, {len(self.store.sessions)} sessions"
 
+    # --- Ryujinx save sync (playclock/savesync.py) ---------------------------------
+    def save_root(self) -> Path | None:
+        return next((d for d in ryujinx_dirs() if (d / "bis" / "user" / "save").is_dir()), None)
+
+    def saves_enabled(self) -> bool:
+        return bool(savesync and self.cfg.get("save_sync") and self.cfg.get("webdav") and self.save_root())
+
+    def make_saves(self, timeout: float = 20, ignore_ryujinx: bool = False):
+        w = self.cfg["webdav"]
+        storage = savesync.DavStorage(w["url"], w["user"], w["password"], timeout=timeout,
+                                      agent=f"PlayClock-Deck/{VERSION}")
+        busy = (lambda: False) if ignore_ryujinx else (lambda: bool(ryujinx_pids()))
+        return savesync.SaveSync(self.save_root(), storage, CONFIG_DIR / "save_sync.json",
+                                 self.data_dir / "save_backups" / "ryujinx", self.store.device, self.name, busy=busy)
+
+    def sync_saves(self, restore: bool = True, titles: list[str] | None = None, timeout: float = 20,
+                   ignore_ryujinx: bool = False, why: str = "") -> dict:
+        """Compare with the cloud: upload what changed here, restore what changed there (Ryujinx closed only)."""
+        if not self.saves_enabled():
+            return {}
+        with self.save_lock:
+            try:
+                result = self.make_saves(timeout, ignore_ryujinx).sync(allow_restore=restore, titles=titles)
+            except savesync.StorageError as e:
+                log(f"saves ({why}): {e}")
+                return {}
+            if titles is None:
+                self.last_save_check = time.time()
+        moved = {t: s for t, s in result.items() if s not in ("synced", "needs_local")}
+        if moved:
+            log(f"saves ({why}): " + ", ".join(f"{t} {s}" for t, s in moved.items()))
+        return result
+
+    def upload_save(self, title: str, min_interval: float, timeout: float = 20, why: str = "") -> bool:
+        if not self.saves_enabled():
+            return False
+        with self.save_lock:
+            try:
+                s = self.make_saves(timeout)
+                if min_interval and s.degraded():  # over 70 % of the month's upload allowance: exits only
+                    return False
+                done = s.upload_if_changed(title, min_interval)
+            except savesync.StorageError as e:
+                log(f"save upload ({why}) {title}: {e}")
+                return False
+        if done:
+            log(f"save uploaded ({why}): {title}")
+        return done
+
+    def loaded_game(self) -> str | None:
+        """Title id of the game Ryujinx has loaded (paused too), from its log."""
+        for reader in self.detector.ryujinx_logs.values():
+            if reader.game and reader.key and reader.key.startswith("switch:"):
+                return reader.key[7:].upper()
+        return None
+
+    def watch_saves(self, woke: bool) -> bool:
+        """Per poll. Returns True when the device file should be uploaded (the open game changed)."""
+        running = any(name == "Ryujinx" for name, _, _ in self.detector.seen)
+        game = self.loaded_game() if running else None
+        before = self.open_game["id"] if self.open_game else None
+        changed = game != before
+        if changed:
+            self.open_game = {"id": game, "since": time.time()} if game else None
+        if not self.saves_enabled():
+            self.ryujinx_was_running = running
+            return changed
+        if before and before != game:
+            self.sync_saves(restore=False, titles=[before], why="game closed")   # like Steam: upload on exit
+        if game:
+            self.upload_save(game, SAVE_EVERY, why="while playing")
+        if (self.ryujinx_was_running and not running) or (woke and not running):
+            self.sync_saves(restore=True, why="ryujinx closed" if not woke else "woke up")
+        elif woke:
+            self.sync_saves(restore=False, why="woke up")  # at least send what was left un-uploaded
+        self.ryujinx_was_running = running
+        return changed
+
     def run(self) -> None:
         log(f"PlayClock Deck {VERSION} running as device {self.store.device} ({self.name})")
+        LaunchGuard(self).start()
+        SleepWatcher(self).start()
+        self.sync_saves(restore=not ryujinx_pids(), why="start")
         last_sync = 0.0
         while True:
             now = time.time()
@@ -684,7 +907,12 @@ class Agent:
             ended = self.tracker.tick(now, found)
             if self.tracker.current and self.tracker.current is not current:
                 log(f"playing {self.tracker.current['game']} ({self.tracker.current['emulator']})")
-            if ended or woke or now - last_sync >= SYNC_EVERY:
+            try:
+                open_changed = self.watch_saves(woke)
+            except Exception as e:  # saves must never stop play-time recording
+                log(f"saves: {e}")
+                open_changed = False
+            if ended or woke or open_changed or now - last_sync >= SYNC_EVERY:
                 log(self.sync())
                 last_sync = now
             time.sleep(INTERVAL)
@@ -751,11 +979,53 @@ def cmd_doctor(agent: Agent) -> None:
     print("detected now:", found or (f"{agent.detector.paused} (paused)" if agent.detector.paused else "nothing"))
 
 
+def cmd_saves(agent: Agent, args: list[str]) -> None:
+    """saves [status] | on | off | sync | use-cloud <title id> | use-local <title id>"""
+    what = args[0] if args else "status"
+    if what in ("on", "off"):
+        agent.cfg["save_sync"] = what == "on"
+        write_json(agent.config_path, agent.cfg, private=True)
+        print(f"Ryujinx save sync {what}. Restart the service to apply: systemctl --user restart playclock-deck")
+        return
+    if not savesync:
+        sys.exit("savesync.py is missing next to playclock_deck.py: reinstall.")
+    if not agent.saves_enabled():
+        sys.exit("Save sync is off, not set up, or Ryujinx's save folder is missing (try: saves on).")
+    if what == "sync":
+        for title, status in agent.sync_saves(restore=not ryujinx_pids(), why="manual").items():
+            print(f"{title} {status}")
+        return
+    if what in ("use-cloud", "use-local") and len(args) > 1:
+        title = args[1].upper()
+        with agent.save_lock:
+            s = agent.make_saves()
+            mine = (s.game(title).get("conflict") or {}).get("file")
+            if what == "use-local" and not mine:
+                sys.exit("This device has no conflicting version of that game in the cloud.")
+            s.resolve(title, "head" if what == "use-cloud" else mine)
+        print(agent.sync_saves(restore=not ryujinx_pids(), titles=[title], why=what))
+        return
+    s = agent.make_saves()
+    names = savesync.game_names(s.root)
+    up, down = s.traffic()
+    print(f"saves: {s.root} · user {s.user} · this month {up / 2**20:.1f} MB up, {down / 2**20:.1f} MB down"
+          f"{' · in-game uploads paused (over 70 % of the allowance)' if s.degraded() else ''}")
+    for title, g in sorted(s.state["games"].items()):
+        head = g.get("head") or {}
+        cloud = f" · cloud: {head.get('device_name', '?')} {time.strftime('%m-%d %H:%M', time.localtime(head['time']))}" \
+            if head.get("time") else ""
+        print(f"  {title} {names.get(title, '')[:30]:<30} {g.get('status', '?')}{cloud}")
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description="PlayClock for Steam Deck: records emulator play time.")
-    ap.add_argument("command", choices=["setup", "run", "status", "sync", "doctor"])
+    ap.add_argument("command", choices=["setup", "run", "status", "sync", "doctor", "saves"])
+    ap.add_argument("args", nargs="*")
     args = ap.parse_args(argv)
     agent = Agent()
+    if args.command == "saves":
+        cmd_saves(agent, args.args)
+        return
     if args.command == "setup":
         cmd_setup(agent)
     elif args.command == "run":

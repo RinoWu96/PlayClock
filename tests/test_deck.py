@@ -245,3 +245,50 @@ def test_running_game_named_from_its_steam_shortcut(steam):
     signed = (34, "Ryujinx", ["/tmp/Ryujinx"], {"SteamGameId": str(steam - (1 << 64))})   # same id, printed signed
     assert deck.Detector().detect([signed])[1] == "The Legend of Zelda: Echoes of Wisdom"
 
+
+
+# --------------------------------------------------------------------------- Ryujinx save sync on the Deck
+
+
+def test_deck_save_sync_follows_the_game(tmp_path, dav_server, monkeypatch, capsys):
+    from test_savesync import V1, V2, V3, ZELDA, content, play, ryujinx
+    from playclock.savesync import DavStorage, SaveSync
+    monkeypatch.setattr(deck, "HOME", tmp_path / "home")
+    monkeypatch.setattr(deck, "CONFIG_DIR", tmp_path / "home" / ".config" / "playclock")
+    monkeypatch.setattr(deck, "ryujinx_pids", lambda procs=None: [])
+    droot = ryujinx(tmp_path / "home" / ".config" / "Ryujinx", {"0000000000000002": (ZELDA, V1)})
+    proot = ryujinx(tmp_path / "pc" / "Ryujinx", {"0000000000000004": (ZELDA, V1)})
+    pc = SaveSync(proot, DavStorage(dav_server, "me@example.com", "app-pass"), tmp_path / "pc" / "s.json",
+                  tmp_path / "pc" / "b", device="pc000000", device_name="RHINO")
+    assert pc.sync() == {ZELDA: "upload"}
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"device_id": "deck1", "name": "Steam Deck", "save_sync": True,
+                               "webdav": {"url": dav_server, "user": "me@example.com", "password": "app-pass"}}))
+    agent = deck.Agent(cfg, tmp_path / "data")
+    assert agent.saves_enabled() and agent.sync_saves() == {ZELDA: "synced"}
+
+    reader = deck.RyujinxLog([])
+    reader.game, reader.key = "Zelda", f"switch:{ZELDA.lower()}"
+    agent.detector.ryujinx_logs = {"logs": reader}
+    agent.detector.seen = [("Ryujinx", 7, ["Ryujinx"])]
+    assert agent.watch_saves(False)                                  # opened: the device file says so
+    assert agent.store.payload("Deck", agent.open_game)["open_game"]["id"] == ZELDA
+    play(droot, "0000000000000002", V2)                               # an in-game save
+    assert not agent.watch_saves(False)
+    assert pc.head(ZELDA)[0]["device_name"] == "Steam Deck"          # first change goes up right away
+    play(droot, "0000000000000002", V3)
+    agent.watch_saves(False)
+    assert pc.head(ZELDA)[0]["hash"] != pc.local_hash(pc.local()[ZELDA])
+    reader.game = None                                                # the game is closed: upload now
+    assert agent.watch_saves(False) and agent.open_game is None
+    assert pc.sync() == {ZELDA: "restore"} and content(proot, "0000000000000004") == V3
+
+    play(proot, "0000000000000004", V1)                               # back on the PC
+    assert pc.sync() == {ZELDA: "upload"}
+    agent.detector.seen = []                                          # Ryujinx closed on the Deck: restore
+    agent.watch_saves(False)
+    assert content(droot, "0000000000000002") == V1
+
+    deck.cmd_saves(agent, ["status"])
+    out = capsys.readouterr().out
+    assert ZELDA in out and "restore" in out and "cloud: RHINO" in out

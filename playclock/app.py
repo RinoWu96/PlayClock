@@ -33,6 +33,8 @@ BASE = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__
 DATA = BASE / "data"
 COVERS = DATA / "covers"
 CONFIG_PATH = DATA / "config.json"
+SAVE_STATE = DATA / "save_sync.json"              # Ryujinx save sync: what this PC last agreed with the cloud
+SAVE_BACKUPS = DATA / "save_backups" / "ryujinx"  # local copies taken before any save is overwritten
 USER_RULES_PATH = DATA / "rules.user.json"
 BUILTIN_RULES_PATH = DATA / "rules.builtin.json"  # read-only reference, rewritten every launch
 LEGACY_RULES_PATH = DATA / "rules.json"  # v0.1 copied all defaults here; renamed to .bak on start
@@ -160,6 +162,10 @@ class Controller(QObject):
         self.hotkey_ok = False
         self.art_queue: list[tuple[str, str]] = []  # (game, image URL) waiting to be downloaded
         self._art_busy = False
+        self.save_syncing = False
+        self.ryu_running = False          # a Ryujinx window exists
+        self.ryu_game: str | None = None  # title id of the game loaded in Ryujinx (paused included)
+        self.remote_open: dict[str, dict] = {}  # device name -> the game its Ryujinx has open (device files)
 
         self.tray = QSystemTrayIcon(QIcon(app_icon()), self)
         self.tray.activated.connect(
@@ -179,6 +185,7 @@ class Controller(QObject):
         self.sync_timer.timeout.connect(self.auto_sync)
         self.sync_timer.start(2 * 60 * 1000)
         QTimer.singleShot(5000, self.sync_now)
+        QTimer.singleShot(8000, self.sync_saves)
 
     def build_tray_menu(self):
         self.menu = QMenu()
@@ -226,6 +233,7 @@ class Controller(QObject):
         self.ticks += 1
         if self.ticks % 12 == 1:  # about once a minute: a stat() call unless Steam's file changed
             self.sync_steam()
+        self.watch_ryujinx()
 
     # --- platforms -------------------------------------------------------------
     def platform_of(self, emulator: str) -> str:
@@ -381,9 +389,13 @@ class Controller(QObject):
         """Keep phones watching summary.json close to live while a game runs; otherwise sync rarely."""
         if self.tracker.current or time.time() - self.last_auto_sync >= 10 * 60 - 5:
             self.sync_now()
+        if time.time() - self.cfg.get("save_last", 0) >= 24 * 3600:  # saves: a full check once a day
+            self.sync_saves()
 
     def sync_now(self, manual: bool = False):
         w = self.cfg.get("webdav")
+        if manual:
+            self.sync_saves(manual=True)
         if not w or self.syncing:
             return
         from .summary import NAME, THUMB_BATCH, build_summary, content_hash, encode_summary, make_thumb, thumb_name
@@ -436,6 +448,7 @@ class Controller(QObject):
                     continue  # a half-written or foreign file: skip it, try again next time
                 changed += merge_payload(self.db, p)
                 devices[p.get("device", "?")] = p.get("name", "?")
+                self.remote_open[p.get("name", "?")] = p.get("open_game") or {}
             self.cfg.update(sync_tags=tags, sync_devices=devices, sync_error="", last_sync=time.time())
             if uploaded_hash:
                 self.cfg["sync_hash"] = uploaded_hash
@@ -444,6 +457,8 @@ class Controller(QObject):
             save_config(self.cfg)
             if changed:
                 self.changed()
+            if blobs:  # another device synced (e.g. the Deck after closing a game): its saves may be newer
+                QTimer.singleShot(2000, self.sync_saves)
         if self.window:
             self.window.refresh_sync_state()
         if manual:
@@ -461,6 +476,135 @@ class Controller(QObject):
         for k in ("webdav", "sync_tags", "sync_hash", "summary_hash", "sync_error", "last_sync", "sync_devices"):
             self.cfg.pop(k, None)
         save_config(self.cfg)
+
+    # --- Ryujinx save sync (savesync.py, docs/SAVE_SYNC_DESIGN.md) -----------------
+    # Like Steam Cloud: a game's save goes up right after it is closed; the cloud's newer saves come down at
+    # start-up, when Ryujinx closes, when another device's file changes, daily, and on "Sync now" — only while
+    # Ryujinx is closed, after a local backup.
+    def save_root(self) -> Path | None:
+        """Ryujinx's data folder: portable next to a known Ryujinx.exe, else %APPDATA%\\Ryujinx."""
+        cands = [Path(p).parent / "portable" for p in self.cfg.get("ryujinx_paths", [])]
+        if os.environ.get("APPDATA"):
+            cands.append(Path(os.environ["APPDATA"]) / "Ryujinx")
+        return next((c for c in cands if (c / "bis" / "user" / "save").is_dir()), None)
+
+    def save_sync_on(self) -> bool:
+        return bool(self.cfg.get("save_sync") and self.cfg.get("webdav") and self.save_root())
+
+    def make_save_sync(self):
+        """A SaveSync bound to this PC (call on the worker thread: it may hash files)."""
+        from .savesync import DavStorage, SaveSync
+        from .sync import unprotect
+        from .winapi import list_windows
+        w = self.cfg["webdav"]
+        storage = DavStorage(w["url"], w["user"], unprotect(w["pass"]), agent=f"PlayClock/{__version__}")
+        busy = lambda: any(x.exe.startswith("ryujinx") for x in list_windows())  # noqa: E731  Ryujinx open at all
+        return SaveSync(self.save_root(), storage, SAVE_STATE, SAVE_BACKUPS, self.db.device,
+                        os.environ.get("COMPUTERNAME", "PC"), busy=busy)
+
+    def save_state(self) -> dict:
+        try:
+            return json.loads(SAVE_STATE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+
+    def sync_saves(self, titles: list[str] | None = None, manual: bool = False):
+        """Upload changed saves / restore newer cloud saves (titles=None: every game) on the worker thread."""
+        if not self.save_sync_on() or self.save_syncing:
+            return
+        self.save_syncing = True
+        before = {t: g.get("status") for t, g in self.save_state().get("games", {}).items()}
+
+        def work():
+            return self.make_save_sync().sync(titles=titles)
+
+        if titles is None:
+            self.cfg["save_last"] = time.time()
+        run_async(work, lambda result, error: self.saves_done(result, error, before, manual))
+        if self.window:
+            self.window.refresh_saves()
+
+    def saves_done(self, result, error, before: dict, manual: bool):
+        self.save_syncing = False
+        if error is not None:
+            msg = str(error)
+            msg = tr("坚果云账号或应用密码不正确。") if msg == "auth" else (
+                tr("网络连接失败，稍后会自动重试。") if msg.startswith("network") else msg)
+            self.set_cfg("save_error", msg)
+            if manual:
+                self.tray.showMessage(APP_TITLE, tr("存档同步失败：{e}", e=msg), QSystemTrayIcon.Warning, 4000)
+        else:
+            self.cfg["save_error"] = ""
+            save_config(self.cfg)
+            names = self.save_game_names()
+            restored = [names.get(t, t) for t, s in result.items() if s == "restore"]
+            conflicts = [names.get(t, t) for t, s in result.items() if s == "conflict" and before.get(t) != "conflict"]
+            waiting = [names.get(t, t) for t, s in result.items() if s == "pending_restore"]
+            if restored:
+                self.tray.showMessage(APP_TITLE, tr("已从云端恢复存档：{games}", games=tr("、").join(restored)),
+                                      QSystemTrayIcon.Information, 5000)
+            if conflicts:
+                self.tray.showMessage(APP_TITLE, tr("这些游戏在两台设备上都有新进度，请在 设置 → 存档同步 里选择保留哪一份："
+                                                    "{games}", games=tr("、").join(conflicts)), QSystemTrayIcon.Warning, 8000)
+            elif waiting and manual:
+                self.tray.showMessage(APP_TITLE, tr("云端有更新的存档，关闭 Ryujinx 后会自动恢复：{games}",
+                                                    games=tr("、").join(waiting)), QSystemTrayIcon.Information, 5000)
+            elif manual and not restored:
+                self.tray.showMessage(APP_TITLE, tr("存档同步完成。"), QSystemTrayIcon.Information, 3000)
+        if self.window:
+            self.window.refresh_saves()
+
+    def save_game_names(self) -> dict[str, str]:
+        from .savesync import game_names
+        root = self.save_root()
+        names = game_names(root) if root else {}
+        for t, g in self.save_state().get("games", {}).items():
+            names.setdefault(t, (g.get("head") or {}).get("game") or t)
+        for key, name in self.db.con.execute("SELECT key, game FROM game_keys WHERE key LIKE 'switch:%'"):
+            names[key[7:].upper()] = self.db.resolve(name)  # PlayClock's own (unified) name for the game
+        return names
+
+    def watch_ryujinx(self):
+        """Per poll: notice a Ryujinx game closing (upload its save), Ryujinx closing (bring newer saves down)
+        and a game opening that another device still has open (warn)."""
+        running = any(emu == "Ryujinx" for emu, _ in self.tracker.seen)
+        game = None
+        if running:
+            for reader in self.tracker.logs.values():
+                if reader.game and reader.key and reader.key.startswith("switch:"):
+                    game = reader.key[7:].upper()
+        if self.ryu_game and game != self.ryu_game:
+            done = self.ryu_game
+            QTimer.singleShot(10_000, lambda: self.sync_saves([done]))  # let the game finish writing
+        if game and game != self.ryu_game:
+            self.warn_open_elsewhere(game)
+        if self.ryu_running and not running:
+            QTimer.singleShot(5_000, self.sync_saves)
+        if running and not self.ryu_running:
+            waiting = [t for t, g in self.save_state().get("games", {}).items() if g.get("status") == "pending_restore"]
+            if waiting and self.save_sync_on():
+                names = self.save_game_names()
+                self.tray.showMessage(APP_TITLE, tr("云端有更新的存档还没恢复：{games}。请先关闭 Ryujinx，恢复后再开始游戏。",
+                                                    games=tr("、").join(names.get(t, t) for t in waiting)),
+                                      QSystemTrayIcon.Warning, 8000)
+        self.ryu_running, self.ryu_game = running, game
+
+    def warn_open_elsewhere(self, title: str):
+        if not self.save_sync_on():
+            return
+        for device, info in self.remote_open.items():
+            if (info or {}).get("id", "").upper() == title:
+                name = self.save_game_names().get(title, title)
+                self.tray.showMessage(APP_TITLE, tr("{device} 上的《{game}》还开着（可能在休眠）。先在 {device} 上退出游戏，"
+                                                    "否则两边进度会冲突。", device=device, game=name),
+                                      QSystemTrayIcon.Warning, 8000)
+
+    def set_save_sync(self, on: bool):
+        self.set_cfg("save_sync", on)
+        if on:
+            self.sync_saves(manual=True)
+        if self.window:
+            self.window.refresh_saves()
 
     # --- one name per game ------------------------------------------------------
     def unify_games(self) -> int:
@@ -887,6 +1031,112 @@ class MainWindow(QMainWindow):
         page = self.pages["settings"]
         if self.current_page() is page:
             page.refresh_sync()
+
+    # --- Ryujinx save sync -------------------------------------------------------
+    def refresh_saves(self):
+        page = self.pages["settings"]
+        if self.current_page() is page:
+            page.refresh_saves()
+
+    def set_save_sync(self, on: bool):
+        self.ctrl.set_save_sync(on)
+
+    def sync_saves_now(self):
+        self.ctrl.sync_saves(manual=True)
+
+    def device_label(self, device: str) -> str:
+        """A device id (or its first 8 characters, as in version file names) -> its name."""
+        if self.db.device.startswith(device):
+            return tr("这台电脑")
+        names = self.cfg.get("sync_devices", {})
+        return next((n for d, n in names.items() if d.startswith(device)), device)
+
+    @staticmethod
+    def stamp_label(stamp: str) -> str:
+        """20261017T093000123Z (UTC) -> local "10-17 19:30"."""
+        import calendar
+        try:
+            t = calendar.timegm(time.strptime(stamp[:15], "%Y%m%dT%H%M%S"))
+        except ValueError:
+            return stamp
+        return time.strftime("%m-%d %H:%M", time.localtime(t))
+
+    def save_job(self, work, done, busy_text: str = ""):
+        """Run save-sync network/file work off the GUI thread; report errors in a dialog."""
+        from .savesync import Busy
+
+        def finished(result, error):
+            if isinstance(error, Busy):
+                QMessageBox.information(self, APP_TITLE, busy_text or tr("请先关闭 Ryujinx 再操作存档。"))
+            elif error is not None:
+                QMessageBox.warning(self, APP_TITLE, tr("存档操作失败：{e}", e=error))
+            else:
+                done(result)
+            self.refresh_saves()
+
+        run_async(work, finished)
+
+    def resolve_save_conflict(self, title: str):
+        """Two devices both have new progress: the user keeps one; the others' devices then take it."""
+        name = self.ctrl.save_game_names().get(title, title)
+
+        def load():
+            s = self.ctrl.make_save_sync()
+            return s.head(title)[0], s.conflicts(title)
+
+        def choose(result):
+            head, conflicts = result
+            if not head or not conflicts:
+                QMessageBox.information(self, APP_TITLE, tr("《{game}》现在没有需要处理的冲突。", game=name))
+                self.ctrl.sync_saves([title])
+                return
+            options = {tr("云端当前的版本：{device}，{time}", device=self.device_label(head.get("device", "")) or
+                          head.get("device_name", ""), time=time.strftime("%m-%d %H:%M", time.localtime(head["time"]))):
+                       "head"}
+            for c in conflicts:
+                options[tr("{device} 的版本：{time}", device=self.device_label(c["device"]),
+                           time=self.stamp_label(c["time"]))] = c["file"]
+            item, ok = QInputDialog.getItem(
+                self, tr("选择保留哪一份存档"),
+                tr("《{game}》在两台设备上都有新进度，只能保留一份。\n没选中的那份不会删除：本机的会留在备份里，"
+                   "也可以在「历史版本」里找回。", game=name), list(options), 0, False)
+            if ok:
+                self.save_job(lambda: self.ctrl.make_save_sync().resolve(title, options[item]),
+                              lambda _r: self.ctrl.sync_saves([title], manual=True))
+
+        self.save_job(load, choose)
+
+    def save_history(self, title: str):
+        """Put an older version of one game's save back (cloud versions and local backups)."""
+        name = self.ctrl.save_game_names().get(title, title)
+
+        def load():
+            s = self.ctrl.make_save_sync()
+            return s.versions(title), s.backups(title)
+
+        def choose(result):
+            versions, backups = result
+            options = {}
+            for v in versions:  # v-<stamp>-<device>-<hash8>.zip
+                _, stamp, device, _h = v[:-4].split("-", 3)
+                options[tr("云端 · {device} · {time}", device=self.device_label(device),
+                           time=self.stamp_label(stamp))] = v
+            for b in backups:   # <stamp>-<hash8>.zip
+                options[tr("本机备份 · {time}", time=self.stamp_label(b.stem.split("-")[0]))] = b
+            if not options:
+                QMessageBox.information(self, APP_TITLE, tr("《{game}》还没有历史版本。", game=name))
+                return
+            item, ok = QInputDialog.getItem(self, tr("历史版本"), tr("用哪个版本替换《{game}》现在的存档？\n"
+                                                                     "现在的存档会先备份。", game=name),
+                                            list(options), 0, False)
+            if not ok:
+                return
+            self.save_job(lambda: self.ctrl.make_save_sync().restore_version(title, options[item]),
+                          lambda _r: (self.ctrl.sync_saves([title], manual=True),
+                                      self.ctrl.tray.showMessage(APP_TITLE, tr("已恢复《{game}》的存档。", game=name),
+                                                                 QSystemTrayIcon.Information, 3000)))
+
+        self.save_job(load, choose)
 
     def add_time(self, game: str = "", platform: str = ""):
         from .ui.dialogs import AddTimeDialog

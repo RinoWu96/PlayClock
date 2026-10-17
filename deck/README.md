@@ -44,3 +44,21 @@ bash ~/.local/share/playclock-deck/uninstall.sh                  # 卸载（可�
 - 设置：`~/.config/playclock/config.json`，权限是 600，只有你的用户能读。里面有坚果云的应用密码，它可以随时在坚果云里撤销。
 - 本机记录：`~/.local/share/playclock/sessions.json`。
 - 云端：坚果云里的 `PlayClock/devices/<设备ID>.json.gz`，只有这台 Deck 会写这个文件。
+
+## Ryujinx 存档同步（和电脑之间）
+像 Steam 云存档一样在 Deck 和电脑之间同步 Ryujinx 存档，存在同一个坚果云的 `PlayClock/saves/ryujinx/` 里。设计见 [docs/SAVE_SYNC_DESIGN.md](../docs/SAVE_SYNC_DESIGN.md)。
+
+```bash
+python3 ~/.local/share/playclock-deck/playclock_deck.py saves on        # 开启（然后重启服务）
+systemctl --user restart playclock-deck
+python3 ~/.local/share/playclock-deck/playclock_deck.py saves           # 每个游戏的状态、本月流量
+python3 ~/.local/share/playclock-deck/playclock_deck.py saves sync      # 立即对比一次
+python3 ~/.local/share/playclock-deck/playclock_deck.py saves use-cloud <游戏ID>   # 冲突时用云端的
+python3 ~/.local/share/playclock-deck/playclock_deck.py saves use-local <游戏ID>   # 冲突时用 Deck 的
+```
+
+- **关闭游戏后上传**；游戏开着时存档有变化，最多每 15 分钟上传一次（本月上传超过额度 70% 后只在关闭游戏时上传）。
+- **启动前下载**：Ryujinx 刚启动时程序会把它暂停一两秒，先把云端更新的存档拿下来再继续，不需要改 Steam 的快捷方式。
+- **休眠前**：尽量把开着的游戏的存档传上去（SteamOS 只给 5 秒，网络也在同时断开，所以不保证）。
+- **冲突**（两边都有新进度）不会自动覆盖：一般在电脑上的 PlayClock 里选，也可以用上面的 `use-cloud` / `use-local`。
+- 覆盖本机存档前都会备份到 `~/.local/share/playclock/save_backups/`。

@@ -804,7 +804,29 @@ class SettingsPage(Page):
         cloud.lay.addWidget(label(tr("通过你自己的坚果云（或任意 WebDAV 网盘）在多台电脑之间同步游玩记录，"
                                      "不经过任何第三方服务器。封面图暂不同步，每台设备会各自补全。"), "faint", wrap=True))
         self.lay.insertWidget(2, cloud)  # right after "General": header layout is 0, general card 1
-        self.lay.insertWidget(3, phone_card())
+
+        saves = Card(spacing=10)
+        head = QHBoxLayout()
+        head.addWidget(label(tr("存档同步（Ryujinx）"), "sectionTitle"))
+        head.addStretch()
+        self.b_saves_now = QPushButton(tr("立即同步存档"))
+        self.b_saves_now.setCursor(Qt.PointingHandCursor)
+        self.b_saves_now.clicked.connect(lambda: ctx.sync_saves_now())
+        head.addWidget(self.b_saves_now)
+        saves.lay.addLayout(head)
+        self.saves_toggle = Toggle(tr("在这台电脑和 Steam Deck 之间同步 Ryujinx 存档"))
+        self.saves_toggle.toggled.connect(lambda v: ctx.set_save_sync(v))
+        saves.lay.addWidget(self.saves_toggle)
+        self.saves_state = label("", "muted", wrap=True)
+        saves.lay.addWidget(self.saves_state)
+        saves.lay.addWidget(label(tr("和 Steam 云存档一样：关闭游戏后上传这个游戏的存档；云端有更新的存档时，在 Ryujinx 关闭的情况下"
+                                     "自动恢复，恢复前先备份本机存档。两边都有新进度时不会自动覆盖，由你选择保留哪一份。"),
+                                  "faint", wrap=True))
+        self.saves_list = QVBoxLayout()
+        self.saves_list.setSpacing(6)
+        saves.lay.addLayout(self.saves_list)
+        self.lay.insertWidget(3, saves)
+        self.lay.insertWidget(4, phone_card())
 
         data = Card(spacing=12)
         data.lay.addWidget(label(tr("数据"), "sectionTitle"))
@@ -833,6 +855,7 @@ class SettingsPage(Page):
                                  + tr("\n内置规则随软件版本更新；自己添加或修改的规则保存在 rules.user.json，更新时不会被覆盖。"))
         self.data_label.setText(tr("所有记录都只保存在本机：{path}", path=self.ctx.data_dir))
         self.refresh_sync()
+        self.refresh_saves()
         self.refresh_overlay()
         self.refresh_pc_games()
         acc = self.ctx.cfg.get("steam_sync")
@@ -884,6 +907,88 @@ class SettingsPage(Page):
         self.b_sync_now.setVisible(on)
         self.b_sync_now.setEnabled(not self.ctx.ctrl.syncing)
         self.b_sync_off.setVisible(on)
+
+    @staticmethod
+    def save_status_text(status: str) -> str:
+        return {
+            "synced": tr("已同步"), "upload": tr("已上传"), "restore": tr("已从云端恢复"),
+            "conflict": tr("冲突：两边都有新进度"),
+            "needs_local": tr("这台电脑还没有它的存档（先在 Ryujinx 里启动一次）"),
+            "pending_restore": tr("云端有更新的存档，关闭 Ryujinx 后恢复"), "pending_upload": tr("待上传"),
+        }.get(status, status)
+
+    def refresh_saves(self):
+        ctx, cfg = self.ctx, self.ctx.cfg
+        root = ctx.ctrl.save_root()
+        self.saves_toggle.blockSignals(True)
+        self.saves_toggle.setChecked(bool(cfg.get("save_sync")))
+        self.saves_toggle.blockSignals(False)
+        self.saves_toggle.setEnabled(bool(cfg.get("webdav") and root))
+        on = ctx.ctrl.save_sync_on()
+        self.b_saves_now.setVisible(on)
+        self.b_saves_now.setEnabled(not ctx.ctrl.save_syncing)
+        state = ctx.ctrl.save_state()
+        if not cfg.get("webdav"):
+            text = tr("需要先开启上面的云同步。")
+        elif not root:
+            text = tr("没有找到 Ryujinx 的存档文件夹。")
+        elif not on:
+            text = tr("未开启。")
+        else:
+            t = state.get("traffic") or {}
+            mb = lambda b: f"{b / 1024 / 1024:.1f} MB"  # noqa: E731
+            text = tr("存档文件夹：{root}\n本月流量：上传 {up}，下载 {down}", root=root,
+                      up=mb(t.get("up", 0) if t.get("month") == time.strftime("%Y-%m") else 0),
+                      down=mb(t.get("down", 0) if t.get("month") == time.strftime("%Y-%m") else 0))
+            if ctx.ctrl.save_syncing:
+                text += "\n" + tr("正在同步存档…")
+            elif cfg.get("save_error"):
+                text += "\n" + tr("上次存档同步失败：{e}", e=cfg["save_error"])
+        self.saves_state.setText(text)
+        while self.saves_list.count():
+            item = self.saves_list.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                while item.layout().count():
+                    w = item.layout().takeAt(0).widget()
+                    if w:
+                        w.deleteLater()
+        if not on:
+            return
+        names = ctx.ctrl.save_game_names()
+        games = state.get("games", {})
+        for title in sorted(games, key=lambda t: names.get(t, t).lower()):
+            g = games[title]
+            status = g.get("status", "")
+            row = QHBoxLayout()
+            name = label(names.get(title, title))
+            name.setFixedWidth(220)
+            name.setToolTip(title)
+            row.addWidget(name)
+            text = self.save_status_text(status)
+            if g.get("remote_conflicts") and status != "conflict":
+                text = tr("冲突：另一台设备上传了不同的进度")
+            if status == "restore" and g.get("restored_from"):
+                text = tr("已从 {device} 恢复", device=g["restored_from"])
+            conflict = status == "conflict" or bool(g.get("remote_conflicts"))
+            info = label(text, None if conflict else "faint", wrap=True)
+            if conflict:
+                info.setStyleSheet(f"color: {theme.DANGER};")
+            row.addWidget(info, 1)
+            if conflict:
+                b = QPushButton(tr("选择保留哪一份…"))
+                b.setObjectName("primary")
+                b.setCursor(Qt.PointingHandCursor)
+                b.clicked.connect(lambda _=False, t=title: ctx.resolve_save_conflict(t))
+                row.addWidget(b)
+            if status != "needs_local":
+                b = QPushButton(tr("历史版本…"))
+                b.setObjectName("ghost")
+                b.setCursor(Qt.PointingHandCursor)
+                b.clicked.connect(lambda _=False, t=title: ctx.save_history(t))
+                row.addWidget(b)
+            self.saves_list.addLayout(row)
 
     def refresh_pc_games(self):
         while self.pc_list.count():
