@@ -273,24 +273,29 @@ def test_deck_save_sync_follows_the_game(tmp_path, dav_server, monkeypatch, caps
     agent.detector.seen = [("Ryujinx", 7, ["Ryujinx"])]
     assert agent.watch_saves(False)                                  # opened: the device file says so
     assert agent.store.payload("Deck", agent.open_game)["open_game"]["id"] == ZELDA
-    play(droot, "0000000000000002", V2)                               # an in-game save
-    assert not agent.watch_saves(False)
-    assert pc.head(ZELDA)[0]["device_name"] == "RHINO"               # nothing before the 15-minute check
-    agent.next_save_upload = 0                                        # ... 15 minutes later
     agent.watch_saves(False)
-    assert pc.head(ZELDA)[0]["device_name"] == "Steam Deck"
+    assert pc.head(ZELDA)[0]["device_name"] == "RHINO"               # unchanged save: nothing sent
+    play(droot, "0000000000000002", V2)                               # an in-game save
+    assert agent.watch_saves(False)                                   # -> device file now, so the PC knows
+    assert pc.head(ZELDA)[0]["device_name"] == "Steam Deck"          # the first change goes up at once
+    assert agent.store.payload("Deck", agent.open_game)["open_game"]["saved"]
     play(droot, "0000000000000002", V3)
-    agent.watch_saves(False)                                          # not again until the next check
+    agent.watch_saves(False)                                          # within 15 minutes: waits
     assert pc.head(ZELDA)[0]["hash"] != pc.local_hash(pc.local()[ZELDA])
+    agent.last_save_upload -= deck.SAVE_EVERY                         # ... 15 minutes later
+    agent.watch_saves(False)
+    assert pc.local_hash(pc.local()[ZELDA]) != pc.head(ZELDA)[0]["hash"]   # (the PC hasn't restored yet)
+    assert pc.sync() == {ZELDA: "restore"} and content(proot, "0000000000000004") == V3
+    play(droot, "0000000000000002", V1)
     reader.game = None                                                # the game is closed: upload now
     assert agent.watch_saves(False) and agent.open_game is None
-    assert pc.sync() == {ZELDA: "restore"} and content(proot, "0000000000000004") == V3
+    assert pc.sync() == {ZELDA: "restore"} and content(proot, "0000000000000004") == V1
 
-    play(proot, "0000000000000004", V1)                               # back on the PC
+    play(proot, "0000000000000004", V2)                               # back on the PC
     assert pc.sync() == {ZELDA: "upload"}
     agent.detector.seen = []                                          # Ryujinx closed on the Deck: restore
     agent.watch_saves(False)
-    assert content(droot, "0000000000000002") == V1
+    assert content(droot, "0000000000000002") == V2
 
     deck.cmd_saves(agent, ["status"])
     out = capsys.readouterr().out

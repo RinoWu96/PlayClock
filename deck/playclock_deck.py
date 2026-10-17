@@ -38,7 +38,7 @@ import time
 import uuid
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 HOME = Path.home()
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "playclock"
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local" / "share") / "playclock"
@@ -769,7 +769,9 @@ class Agent:
         self.last_save_check = 0.0          # last full comparison with the cloud
         self.open_game: dict | None = None  # {"id": title id, "since": t} while Ryujinx has a game loaded
         self.ryujinx_was_running = False
-        self.next_save_upload = 0.0         # next in-game save check (SAVE_EVERY after the game opened)
+        self.watched: Path | None = None    # the open game's save folder (…/bis/user/save/<index>/0)
+        self.watched_sig = ""               # its signature when last uploaded / when the game opened
+        self.last_save_upload = 0.0         # in-game uploads: at most one per SAVE_EVERY
 
     @property
     def name(self) -> str:
@@ -862,6 +864,13 @@ class Agent:
                 return reader.key[7:].upper()
         return None
 
+    @staticmethod
+    def signature(folder: Path | None) -> str:
+        try:
+            return savesync.tree_signature(folder) if folder else ""
+        except OSError:
+            return ""
+
     def watch_saves(self, woke: bool) -> bool:
         """Per poll. Returns True when the device file should be uploaded (the open game changed)."""
         running = any(name == "Ryujinx" for name, _, _ in self.detector.seen)
@@ -875,11 +884,18 @@ class Agent:
             return changed
         if before and before != game:
             self.sync_saves(restore=False, titles=[before], why="game closed")   # like Steam: upload on exit
-        if changed and game:
-            self.next_save_upload = time.time() + SAVE_EVERY
-        elif game and time.time() >= self.next_save_upload:  # a check every 15 minutes, nothing in between
-            self.next_save_upload = time.time() + SAVE_EVERY
-            self.upload_save(game, in_game=True, why="while playing")
+        if changed:  # watch the open game's save folder: its first change goes up at once
+            sd = self.make_saves().local().get(game) if game else None
+            self.watched = sd.path / "0" if sd else None
+            self.watched_sig = self.signature(self.watched)
+            self.last_save_upload = 0.0
+        if game and self.watched:
+            sig = self.signature(self.watched)  # stat calls only, every poll
+            if sig != self.watched_sig and time.time() - self.last_save_upload >= SAVE_EVERY:
+                if self.upload_save(game, in_game=True, why="while playing"):
+                    self.open_game["saved"] = time.time()  # tells the PC (device file) to fetch it
+                    changed = True                         # -> the device file is uploaded right away
+                self.watched_sig, self.last_save_upload = sig, time.time()  # failures retry 15 minutes later
         if (self.ryujinx_was_running and not running) or (woke and not running):
             self.sync_saves(restore=True, why="ryujinx closed" if not woke else "woke up")
         elif woke:

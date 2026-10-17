@@ -443,16 +443,20 @@ class Controller(QObject):
         else:
             blobs, tags = result
             devices = live_devices(self.cfg.get("sync_devices", {}), tags)  # drop devices whose file is gone
-            changed, idle_elsewhere = 0, False
+            changed, saves_moved = 0, False
             for blob in blobs.values():
                 try:
                     p = decode(blob)
                 except (OSError, ValueError):
                     continue  # a half-written or foreign file: skip it, try again next time
                 changed += merge_payload(self.db, p)
-                devices[p.get("device", "?")] = p.get("name", "?")
-                self.remote_open[p.get("name", "?")] = p.get("open_game") or {}
-                idle_elsewhere = idle_elsewhere or not p.get("open_game")
+                name = p.get("name", "?")
+                devices[p.get("device", "?")] = name
+                open_game = p.get("open_game") or {}
+                # Newer saves may be in the cloud when that device has no game open (it just closed one), or when
+                # it reports an in-game upload (open_game.saved changes; the Deck uploads at most every 15 min).
+                saves_moved |= not open_game or open_game.get("saved") != self.remote_open.get(name, {}).get("saved")
+                self.remote_open[name] = open_game
             self.cfg.update(sync_tags=tags, sync_devices=devices, sync_error="", last_sync=time.time())
             if uploaded_hash:
                 self.cfg["sync_hash"] = uploaded_hash
@@ -461,7 +465,7 @@ class Controller(QObject):
             save_config(self.cfg)
             if changed:
                 self.changed()
-            if idle_elsewhere:  # another device synced with no game open (e.g. the Deck just closed one)
+            if saves_moved:
                 QTimer.singleShot(2000, self.sync_saves)
         if self.window:
             self.window.refresh_sync_state()
