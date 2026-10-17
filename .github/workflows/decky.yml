@@ -2,6 +2,7 @@ name: decky plugin
 
 on:
   push:
+    branches: ["**"]           # with only `tags`, branch pushes would not build at all
     paths:
       - "deck/decky/**"
       - ".github/workflows/decky.yml"
