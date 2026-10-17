@@ -1,0 +1,39 @@
+name: decky plugin
+
+on:
+  push:
+    paths:
+      - "deck/decky/**"
+      - ".github/workflows/decky.yml"
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deck/decky
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: corepack enable && corepack prepare pnpm@9 --activate
+      - run: pnpm install
+      - run: pnpm exec tsc --noEmit   # type errors fail the build (rollup only warns)
+      - run: pnpm build
+      - name: Package PlayClock-Decky.zip
+        run: |
+          mkdir -p out/PlayClock
+          cp -r dist main.py plugin.json package.json README.md out/PlayClock/
+          cd out && zip -r PlayClock-Decky.zip PlayClock
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PlayClock-Decky
+          path: deck/decky/out/PlayClock-Decky.zip
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" out/PlayClock-Decky.zip --clobber || echo "no release yet"

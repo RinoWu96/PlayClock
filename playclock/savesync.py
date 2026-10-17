@@ -306,10 +306,12 @@ def decide(local: str | None, base: str | None, head: dict | None) -> str:
         return "needs_local"
     if local == remote:
         return "synced"
-    if (base is not None and local == base) or local in head.get("supersedes", []):
+    if base is not None and local == base:
         return "restore"
     if base is not None and remote == base:
-        return "upload"
+        return "upload"  # new progress here, even if it happens to equal a version once decided against
+    if local in head.get("supersedes", []):
+        return "restore"  # a user picked the cloud's version over this one
     return "conflict"
 
 

@@ -1,0 +1,11 @@
+{
+  "name": "PlayClock",
+  "author": "Rino Wu",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["playtime", "emulation", "ryujinx", "saves"],
+    "description": "Quick Access panel for PlayClock on Steam Deck: play time today, sync now, the cloud account, and Ryujinx save sync between the Deck and the PC (status, conflicts, settings).",
+    "image": "https://opengraph.githubassets.com/1/RinoWu96/PlayClock"
+  }
+}

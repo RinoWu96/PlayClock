@@ -1,6 +1,7 @@
 """The Steam Deck agent (deck/playclock_deck.py) and its contract with the Windows app's sync format."""
 import importlib.util
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -300,3 +301,65 @@ def test_deck_save_sync_follows_the_game(tmp_path, dav_server, monkeypatch, caps
     deck.cmd_saves(agent, ["status"])
     out = capsys.readouterr().out
     assert ZELDA in out and "restore" in out and "cloud: RHINO" in out
+
+
+def test_plugin_controls_settings_requests_and_live_status(tmp_path, dav_server, monkeypatch):
+    from test_savesync import V1, V2, ZELDA, content, play, ryujinx
+    from playclock.savesync import DavStorage, SaveSync
+    monkeypatch.setattr(deck, "HOME", tmp_path / "home")
+    monkeypatch.setattr(deck, "CONFIG_DIR", tmp_path / "home" / ".config" / "playclock")
+    monkeypatch.setattr(deck, "ryujinx_pids", lambda procs=None: [])
+    droot = ryujinx(tmp_path / "home" / ".config" / "Ryujinx", {"0000000000000002": (ZELDA, V1)})
+    proot = ryujinx(tmp_path / "pc" / "Ryujinx", {"0000000000000004": (ZELDA, V2)})
+    pc = SaveSync(proot, DavStorage(dav_server, "me@example.com", "app-pass"), tmp_path / "pc" / "s.json",
+                  tmp_path / "pc" / "b", device="pc000000", device_name="RHINO")
+    pc.sync()
+    cfg_path = tmp_path / "config.json"
+    cfg = {"device_id": "deck1", "name": "Steam Deck",
+           "webdav": {"url": dav_server, "user": "me@example.com", "password": "app-pass"}}
+    cfg_path.write_text(json.dumps(cfg))
+    agent = deck.Agent(cfg_path, tmp_path / "data")
+    assert not agent.saves_enabled() and agent.setting("save_every") == 15
+    monkeypatch.setattr(agent, "start_threads", lambda: None)
+
+    # the plugin turns save sync on and in-game uploads off: picked up without a restart
+    os.utime(cfg_path, (1, 1))
+    agent.config_mtime = agent._mtime()
+    cfg_path.write_text(json.dumps(dict(cfg, save_sync=True, save_every=0)))
+    assert agent.reload_config() and agent.saves_enabled() and agent.setting("save_every") == 0
+    assert agent.cfg["device_id"] == "deck1"
+
+    # first sync: the two versions conflict; the plugin asks to keep the cloud's (the PC's)
+    assert agent.sync_saves() == {ZELDA: "conflict"}
+    (tmp_path / "data").mkdir(exist_ok=True)
+    (tmp_path / "data" / "requests.json").write_text(json.dumps([{"action": "resolve", "title": ZELDA, "keep": "cloud"}]))
+    agent.handle_requests()
+    assert agent.last_action["ok"], agent.last_action
+    assert content(droot, "0000000000000002") == V2
+    assert not (tmp_path / "data" / "requests.json").exists()
+
+    (tmp_path / "data" / "requests.json").write_text(json.dumps([{"action": "sync"}]))
+    agent.handle_requests()
+    assert agent.last_action["action"] == "sync" and agent.last_action["ok"]
+
+    # live.json: what the plugin shows; rewritten only when something visible changes
+    agent.tracker.tick(1_800_000_000, ("Ryujinx", "Zelda", None))
+    agent.tracker.tick(1_800_000_000 + 150, ("Ryujinx", "Zelda", None))
+    agent.write_live()
+    live = json.loads((tmp_path / "data" / "live.json").read_text(encoding="utf-8"))
+    assert live["playing"]["game"] == "Zelda" and live["playing"]["minutes"] == 0   # 150 s: a long gap isn't counted
+    first = (tmp_path / "data" / "live.json").stat().st_mtime_ns
+    agent.write_live()
+    assert (tmp_path / "data" / "live.json").stat().st_mtime_ns == first
+
+    # save_every = 0: an in-game change waits for the game to close
+    reader = deck.RyujinxLog([])
+    reader.game, reader.key = "Zelda", f"switch:{ZELDA.lower()}"
+    agent.detector.ryujinx_logs, agent.detector.seen = {"logs": reader}, [("Ryujinx", 7, ["Ryujinx"])]
+    agent.watch_saves(False)
+    play(droot, "0000000000000002", V1)
+    agent.watch_saves(False)
+    assert pc.head(ZELDA)[0]["device_name"] == "RHINO"
+    reader.game = None
+    agent.watch_saves(False)
+    assert pc.head(ZELDA)[0]["device_name"] == "Steam Deck"

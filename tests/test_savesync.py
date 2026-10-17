@@ -135,6 +135,7 @@ def test_decision_table():
     assert decide("L", "R2", {"hash": "R2"}) == "upload"  # only this device changed
     assert decide("L", "B", head) == "conflict"          # both changed
     assert decide("OLD", "B", head) == "restore"         # a user picked the cloud's version over ours
+    assert decide("OLD", "R", head) == "upload"          # in sync, then new progress that equals an old version
     assert decide("L", None, head) == "conflict"         # first time on this device, different content
 
 

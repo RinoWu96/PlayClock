@@ -639,8 +639,16 @@ def encode(payload: dict) -> bytes:
 # --------------------------------------------------------------------------- Ryujinx save sync
 
 
-SAVE_EVERY = 15 * 60   # while a game runs, upload its save at most this often (and always when it closes)
+SAVE_EVERY = 15 * 60   # default: while a game runs, upload its save at most this often (always when it closes)
 GUARD_FRESH = 60       # a launch is held only if the cloud wasn't checked within this many seconds
+# Settings in config.json (the Decky plugin changes them); the agent re-reads the file whenever it changes.
+DEFAULTS = {
+    "save_sync": False,     # Ryujinx save sync on/off
+    "save_every": 15,       # minutes between in-game uploads; 0 = only when the game closes
+    "launch_check": True,   # hold a starting Ryujinx while newer cloud saves come down
+    "sleep_upload": True,   # upload the open game's save just before the Deck sleeps
+    "quota_mb": 1024,       # the storage's monthly upload allowance (0 = no limit)
+}
 
 
 def ryujinx_pids(procs=None) -> list[int]:
@@ -669,9 +677,16 @@ class LaunchGuard(threading.Thread):
         for pid in ryujinx_pids():  # a previous agent may have died while holding one
             if stopped(pid):
                 os.kill(pid, signal.SIGCONT)
-        self.known = {int(d) for d in os.listdir("/proc") if d.isdigit()}
+        active = False
         while True:
-            time.sleep(1)
+            on = self.agent.saves_enabled() and self.agent.setting("launch_check")
+            time.sleep(1 if on else 5)
+            if not on:
+                active = False
+                continue
+            if not active:  # (re)enabled: processes already running are not new
+                self.known, active = {int(d) for d in os.listdir("/proc") if d.isdigit()}, True
+                continue
             try:
                 self.poll()
             except Exception as e:  # never take the agent down
@@ -681,7 +696,7 @@ class LaunchGuard(threading.Thread):
         pids = {int(d) for d in os.listdir("/proc") if d.isdigit()}
         new = pids - self.known
         self.known = pids
-        if not new or not self.agent.saves_enabled():
+        if not new:
             return
         fresh = []
         for pid in new:
@@ -732,23 +747,33 @@ class SleepWatcher(threading.Thread):
             self.inhibitor.terminate()
         self.inhibitor = None
 
+    def wanted(self) -> bool:
+        return self.agent.saves_enabled() and bool(self.agent.setting("sleep_upload"))
+
+    def apply(self) -> None:
+        """Hold the delay inhibitor only while uploads before sleep are wanted (settings may change)."""
+        if self.wanted():
+            self.hold()
+        else:
+            self.release()
+
     def run(self) -> None:
         if not (shutil.which("gdbus") and shutil.which("systemd-inhibit")):
             return
         mon = subprocess.Popen(["gdbus", "monitor", "--system", "--dest", "org.freedesktop.login1",
                                 "--object-path", "/org/freedesktop/login1"],
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        self.hold()
+        self.apply()
         for line in mon.stdout:
             if "PrepareForSleep (true" in line:
                 try:
                     game = self.agent.open_game
-                    if game and self.agent.saves_enabled():
+                    if game and self.wanted():
                         self.agent.upload_save(game["id"], in_game=False, timeout=3, why="sleep")
                 finally:
                     self.release()
             elif "PrepareForSleep (false" in line:
-                self.hold()
+                self.apply()
 
 
 # --------------------------------------------------------------------------- app
@@ -771,7 +796,102 @@ class Agent:
         self.ryujinx_was_running = False
         self.watched: Path | None = None    # the open game's save folder (…/bis/user/save/<index>/0)
         self.watched_sig = ""               # its signature when last uploaded / when the game opened
-        self.last_save_upload = 0.0         # in-game uploads: at most one per SAVE_EVERY
+        self.last_save_upload = 0.0         # in-game uploads: at most one per save_every minutes
+        self.config_mtime = self._mtime()
+        self.guard: LaunchGuard | None = None
+        self.sleeper: SleepWatcher | None = None
+        self.wake = threading.Event()       # SIGUSR1 (from the Decky plugin): act now, not at the next poll
+        self.last_sync_result = ""
+        self.last_action: dict | None = None
+        self.live_written = ""
+
+    # --- settings (config.json; the Decky plugin edits it) -------------------------
+    def setting(self, key: str):
+        return self.cfg.get(key, DEFAULTS[key])
+
+    def _mtime(self) -> float:
+        try:
+            return self.config_path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def reload_config(self) -> bool:
+        """Re-read config.json if it changed (settings, account, device name). True when it did."""
+        mtime = self._mtime()
+        if mtime == self.config_mtime:
+            return False
+        self.config_mtime = mtime
+        cfg = read_json(self.config_path, None)
+        if not isinstance(cfg, dict):
+            return False  # half-written: next poll
+        cfg["device_id"] = self.cfg["device_id"]  # never changes
+        self.cfg = cfg
+        log("settings changed: " + ", ".join(f"{k}={self.setting(k)}" for k in DEFAULTS))
+        self.start_threads()
+        return True
+
+    def start_threads(self) -> None:
+        """The launch guard and sleep watcher exist once save sync has been on; they follow the settings."""
+        if self.saves_enabled() and self.guard is None:
+            self.guard, self.sleeper = LaunchGuard(self), SleepWatcher(self)
+            self.guard.start()
+            self.sleeper.start()
+        elif self.sleeper:
+            self.sleeper.apply()
+
+    # --- requests from the Decky plugin (requests.json + SIGUSR1) ------------------
+    def handle_requests(self) -> None:
+        path = self.data_dir / "requests.json"
+        work = path.with_suffix(".work")
+        try:
+            os.replace(path, work)
+        except OSError:
+            return  # nothing asked
+        requests = read_json(work, [])
+        work.unlink(missing_ok=True)
+        for req in requests if isinstance(requests, list) else []:
+            action = req.get("action")
+            try:
+                if action == "sync":
+                    self.last_sync_result = self.sync(force=True)
+                    saves = self.sync_saves(restore=not ryujinx_pids(), why="manual")
+                    msg = self.last_sync_result + (f"; saves: {len(saves)} games checked" if saves else "")
+                elif action == "resolve":
+                    title, keep = req["title"].upper(), req["keep"]
+                    with self.save_lock:
+                        s = self.make_saves()
+                        mine = (s.game(title).get("conflict") or {}).get("file")
+                        if keep == "local" and not mine:
+                            raise ValueError("this Deck has no conflicting version of that game in the cloud")
+                        s.resolve(title, "head" if keep == "cloud" else mine)
+                    msg = f"{title}: " + self.sync_saves(restore=not ryujinx_pids(), titles=[title],
+                                                          why=f"use {keep}").get(title, "")
+                else:
+                    continue
+                self.last_action = {"action": action, "ok": True, "message": msg, "time": time.time()}
+            except Exception as e:  # reported to the plugin, never fatal
+                self.last_action = {"action": action, "ok": False, "message": str(e), "time": time.time()}
+            log(f"request {action}: {self.last_action['message']}")
+
+    # --- what the Decky plugin shows (live.json, written only when it changes) -----
+    def today_seconds(self) -> float:
+        lt = time.localtime()
+        midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        return sum(min(s["seconds"], s["end"] - midnight) for s in self.store.sessions
+                   if s["source"] is None and s["end"] > midnight)
+
+    def write_live(self) -> None:
+        cur = self.tracker.current
+        live = {"version": VERSION, "pid": os.getpid(), "name": self.name,
+                "playing": {"game": cur["game"], "emulator": cur["emulator"], "start": cur["start"],
+                            "minutes": int(cur["seconds"] // 60)} if cur else None,
+                "paused": self.detector.paused, "today_minutes": int(self.today_seconds() // 60),
+                "last_sync": self.store.last_sync, "sync_result": self.last_sync_result,
+                "save_check": self.last_save_check, "last_action": self.last_action}
+        text = json.dumps(live, ensure_ascii=False, sort_keys=True)
+        if text != self.live_written:  # minutes, not seconds: at most about one write a minute while playing
+            write_json(self.data_dir / "live.json", dict(live, updated=time.time()))
+            self.live_written = text
 
     @property
     def name(self) -> str:
@@ -818,8 +938,10 @@ class Agent:
         w = self.cfg["webdav"]
         storage = WebDAV(w["url"], w["user"], w["password"], timeout=timeout)
         busy = (lambda: False) if ignore_ryujinx else (lambda: bool(ryujinx_pids()))
+        quota = int(self.setting("quota_mb")) * 2 ** 20 or 1 << 62  # 0: no limit
         return savesync.SaveSync(self.save_root(), storage, CONFIG_DIR / "save_sync.json",
-                                 self.data_dir / "save_backups" / "ryujinx", self.store.device, self.name, busy=busy)
+                                 self.data_dir / "save_backups" / "ryujinx", self.store.device, self.name, busy=busy,
+                                 quota_up=quota)
 
     def sync_saves(self, restore: bool = True, titles: list[str] | None = None, timeout: float = 20,
                    ignore_ryujinx: bool = False, why: str = "", quick: bool = False) -> dict:
@@ -889,9 +1011,10 @@ class Agent:
             self.watched = sd.path / "0" if sd else None
             self.watched_sig = self.signature(self.watched)
             self.last_save_upload = 0.0
-        if game and self.watched:
+        every = int(self.setting("save_every")) * 60  # 0: only when the game closes
+        if game and self.watched and every:
             sig = self.signature(self.watched)  # stat calls only, every poll
-            if sig != self.watched_sig and time.time() - self.last_save_upload >= SAVE_EVERY:
+            if sig != self.watched_sig and time.time() - self.last_save_upload >= every:
                 if self.upload_save(game, in_game=True, why="while playing"):
                     self.open_game["saved"] = time.time()  # tells the PC (device file) to fetch it
                     changed = True                         # -> the device file is uploaded right away
@@ -905,12 +1028,15 @@ class Agent:
 
     def run(self) -> None:
         log(f"PlayClock Deck {VERSION} running as device {self.store.device} ({self.name})")
-        if self.saves_enabled():  # the threads cost nothing when save sync is off: not started
-            LaunchGuard(self).start()
-            SleepWatcher(self).start()
+        signal.signal(signal.SIGUSR1, lambda *_: self.wake.set())
+        self.start_threads()  # not started while save sync is off
+        if self.saves_enabled():
             self.sync_saves(restore=not ryujinx_pids(), why="start")
         last_sync = 0.0
         while True:
+            if self.reload_config() and self.saves_enabled():
+                self.sync_saves(restore=not ryujinx_pids(), why="settings")
+            self.handle_requests()
             now = time.time()
             woke = self.tracker.last_tick is not None and now - self.tracker.last_tick > 60  # back from sleep
             found = self.detector.detect()
@@ -924,9 +1050,12 @@ class Agent:
                 log(f"saves: {e}")
                 open_changed = False
             if ended or woke or open_changed or now - last_sync >= SYNC_EVERY:
-                log(self.sync())
+                self.last_sync_result = self.sync()
+                log(self.last_sync_result)
                 last_sync = now
-            time.sleep(INTERVAL)
+            self.write_live()
+            self.wake.wait(INTERVAL)
+            self.wake.clear()
 
 
 def cmd_setup(agent: Agent) -> None:
@@ -996,7 +1125,7 @@ def cmd_saves(agent: Agent, args: list[str]) -> None:
     if what in ("on", "off"):
         agent.cfg["save_sync"] = what == "on"
         write_json(agent.config_path, agent.cfg, private=True)
-        print(f"Ryujinx save sync {what}. Restart the service to apply: systemctl --user restart playclock-deck")
+        print(f"Ryujinx save sync {what} (the running service picks it up within a few seconds).")
         return
     if not agent.saves_enabled():
         sys.exit("Save sync is off, not set up, or Ryujinx's save folder is missing (try: saves on).")
